@@ -2,30 +2,35 @@
 set -Eeuo pipefail
 APP_DIR=/opt/9router; DATA_DIR="$APP_DIR/data"; ENV_FILE="$APP_DIR/.env"; CONTAINER_NAME=9router; IMAGE=decolua/9router:latest; PORT=20128
 UPDATE_SCRIPT="$APP_DIR/update.sh"; UPDATE_SERVICE=/etc/systemd/system/9router-update.service; UPDATE_TIMER=/etc/systemd/system/9router-update.timer
-DEFAULT_PASSWORD=123456
 log(){ echo "[+] $*"; }; warn(){ echo "[!] $*"; }; fail(){ echo "[ERROR] $*" >&2; exit 1; }
 need_root(){ [[ $EUID -eq 0 ]] || fail "Run as root."; }
 if [[ -e /dev/tty ]]; then exec 3</dev/tty 4>/dev/tty 2>/dev/null || true; fi
 ask(){ local p="$1"; [[ -e /dev/fd/3 ]] || return 1; printf '%s' "$p" >&4; IFS= read -r REPLY <&3; }
 install_deps(){ apt-get update -qq; apt-get install -y -qq ca-certificates curl openssl >/dev/null; }
 ensure_docker(){ command -v docker >/dev/null 2>&1 || { curl -fsSL https://get.docker.com | sh; }; systemctl enable --now docker; }
+generate_password(){ openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 32; }
 write_env(){
   mkdir -p "$DATA_DIR/auth"; chmod 700 "$APP_DIR" "$DATA_DIR" "$DATA_DIR/auth";
   [[ -s "$DATA_DIR/machine-id" ]] || openssl rand -hex 32 > "$DATA_DIR/machine-id";
   [[ -s "$DATA_DIR/auth/cli-secret" ]] || openssl rand -hex 32 > "$DATA_DIR/auth/cli-secret";
   chmod 600 "$DATA_DIR/machine-id" "$DATA_DIR/auth/cli-secret";
   if [[ -f "$ENV_FILE" ]]; then
-    # Keep an existing custom password, but ensure fresh installs use the official default.
-    grep -q '^INITIAL_PASSWORD=' "$ENV_FILE" || echo "INITIAL_PASSWORD=$DEFAULT_PASSWORD" >> "$ENV_FILE"
+    grep -q '^INITIAL_PASSWORD=' "$ENV_FILE" || { local p; p=$(generate_password); printf '\nINITIAL_PASSWORD=%s\n' "$p" >> "$ENV_FILE"; }
     return
   fi
+  local password
+  echo >&4
+  ask "Dashboard password (leave empty = secure random 32 chars): " || true
+  password="${REPLY:-}"
+  if [[ -z "$password" ]]; then password=$(generate_password); fi
+  if (( ${#password} < 8 )); then fail "Password must be at least 8 characters."; fi
   cat > "$ENV_FILE" <<EOF
 NODE_ENV=production
 PORT=$PORT
 HOSTNAME=0.0.0.0
 DATA_DIR=/app/data
 JWT_SECRET=$(openssl rand -hex 32)
-INITIAL_PASSWORD=$DEFAULT_PASSWORD
+INITIAL_PASSWORD=$password
 API_KEY_SECRET=$(openssl rand -hex 32)
 MACHINE_ID_SALT=$(openssl rand -hex 32)
 NEXT_PUBLIC_BASE_URL=http://127.0.0.1:$PORT
@@ -78,7 +83,7 @@ get_password(){
     local p; p=$(sed -n 's/^INITIAL_PASSWORD=//p' "$ENV_FILE" | head -n1 || true)
     [[ -n "$p" ]] && printf '%s' "$p" && return
   fi
-  printf '%s' "$DEFAULT_PASSWORD"
+  printf '%s' "UNKNOWN"
 }
 show_info(){
   echo; echo "========== 9Router ==========";
