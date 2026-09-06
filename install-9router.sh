@@ -185,7 +185,6 @@ echo "Initial password: ${PASSWORD}"
   echo "SAVE THIS PASSWORD."
 fi
 echo
-echo '443/Apache was not modified.'
 echo
 echo 'Useful commands:'
 echo '  docker logs -f 9router'
