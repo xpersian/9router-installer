@@ -4,12 +4,18 @@ APP_DIR=/opt/9router; DATA_DIR="$APP_DIR/data"; ENV_FILE="$APP_DIR/.env"; CONTAI
 UPDATE_SCRIPT="$APP_DIR/update.sh"; UPDATE_SERVICE=/etc/systemd/system/9router-update.service; UPDATE_TIMER=/etc/systemd/system/9router-update.timer
 log(){ echo "[+] $*"; }; warn(){ echo "[!] $*"; }; fail(){ echo "[ERROR] $*" >&2; exit 1; }
 need_root(){ [[ $EUID -eq 0 ]] || fail "Run as root."; }
-# Use a dedicated terminal FD. This works with process substitution and normal script execution.
 if [[ -e /dev/tty ]]; then exec 3</dev/tty 4>/dev/tty 2>/dev/null || true; fi
 ask(){ local p="$1"; [[ -e /dev/fd/3 ]] || return 1; printf '%s' "$p" >&4; IFS= read -r REPLY <&3; }
 install_deps(){ apt-get update -qq; apt-get install -y -qq ca-certificates curl openssl >/dev/null; }
 ensure_docker(){ command -v docker >/dev/null 2>&1 || { curl -fsSL https://get.docker.com | sh; }; systemctl enable --now docker; }
-write_env(){ mkdir -p "$DATA_DIR"; chmod 700 "$APP_DIR" "$DATA_DIR"; [[ -f "$ENV_FILE" ]] && return; cat > "$ENV_FILE" <<EOF
+write_env(){
+  mkdir -p "$DATA_DIR/auth"; chmod 700 "$APP_DIR" "$DATA_DIR" "$DATA_DIR/auth";
+  # Pre-create these files so the server and installer always use the same CLI credentials.
+  [[ -s "$DATA_DIR/machine-id" ]] || openssl rand -hex 32 > "$DATA_DIR/machine-id";
+  [[ -s "$DATA_DIR/auth/cli-secret" ]] || openssl rand -hex 32 > "$DATA_DIR/auth/cli-secret";
+  chmod 600 "$DATA_DIR/machine-id" "$DATA_DIR/auth/cli-secret";
+  [[ -f "$ENV_FILE" ]] && return;
+  cat > "$ENV_FILE" <<EOF
 NODE_ENV=production
 PORT=$PORT
 HOSTNAME=0.0.0.0
@@ -22,8 +28,9 @@ NEXT_PUBLIC_BASE_URL=http://127.0.0.1:$PORT
 NEXT_PUBLIC_CLOUD_URL=https://9router.com
 ENABLE_REQUEST_LOGS=false
 EOF
-chmod 600 "$ENV_FILE"; }
-run_container(){ docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true; docker run -d --name "$CONTAINER_NAME" --restart unless-stopped -p "$PORT:$PORT" --env-file "$ENV_FILE" -v "$DATA_DIR:/app/data" "$IMAGE" >/dev/null; sleep 5; docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME" || fail "9Router failed to start."; }
+  chmod 600 "$ENV_FILE";
+}
+run_container(){ docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true; docker run -d --name "$CONTAINER_NAME" --restart unless-stopped -p "$PORT:$PORT" --env-file "$ENV_FILE" -v "$DATA_DIR:/app/data" "$IMAGE" >/dev/null; for _ in {1..20}; do docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME" && break; sleep 1; done; docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME" || fail "9Router failed to start."; }
 write_update(){ cat > "$UPDATE_SCRIPT" <<'EOF'
 #!/usr/bin/env bash
 set -e
@@ -52,11 +59,27 @@ RandomizedDelaySec=10m
 WantedBy=timers.target
 EOF
 systemctl daemon-reload; systemctl enable --now 9router-update.timer; }
-cli_token(){ docker exec "$CONTAINER_NAME" node -e 'const f=require("fs"),c=require("crypto");let r=p=>{try{return f.readFileSync(p,"utf8").trim()}catch(e){return ""}},i=r("/app/data/machine-id")||r("/etc/machine-id"),s=r("/app/data/auth/cli-secret");if(!i||!s)process.exit(2);console.log(c.createHash("sha256").update(i+"9r-cli-auth"+s).digest("hex").slice(0,16))' 2>/dev/null; }
-tunnel(){ local a=$1 t; t=$(cli_token || true); [[ -n $t ]] || fail "CLI token unavailable."; curl -sS -X POST -H "x-9r-cli-token: $t" "http://127.0.0.1:$PORT/api/tunnel/$a"; echo; }
-install_9router(){ install_deps; ensure_docker; write_env; docker pull "$IMAGE"; run_container; write_update; echo "9Router installed."; if ask "Enable Tunnel now? [y/N]: "; then [[ $REPLY =~ ^[Yy]$ ]] && tunnel enable || true; fi; }
-status(){ docker ps --filter "name=^/$CONTAINER_NAME$"; }
-tunnel_status(){ local t; t=$(cli_token || true); [[ -n $t ]] || fail "CLI token unavailable."; curl -sS -H "x-9r-cli-token: $t" "http://127.0.0.1:$PORT/api/tunnel/status"; echo; }
+cli_token(){
+  docker exec "$CONTAINER_NAME" node -e 'const fs=require("fs"),crypto=require("crypto");const r=p=>{try{return fs.readFileSync(p,"utf8").trim()}catch(e){return ""}};const i=r("/app/data/machine-id"),s=r("/app/data/auth/cli-secret");if(!i||!s)process.exit(2);process.stdout.write(crypto.createHash("sha256").update(i+"9r-cli-auth"+s).digest("hex").slice(0,16));' 2>/dev/null;
+}
+api_json(){ local path="$1" t; t=$(cli_token || true); [[ -n "$t" ]] || fail "CLI token unavailable. Check /opt/9router/data/machine-id and auth/cli-secret."; curl -fsS --max-time 15 -H "x-9r-cli-token: $t" "http://127.0.0.1:$PORT$path"; }
+tunnel(){ local a=$1 t out; t=$(cli_token || true); [[ -n "$t" ]] || fail "CLI token unavailable. Check /opt/9router/data/machine-id and auth/cli-secret."; out=$(curl -sS --max-time 60 -X POST -H "x-9r-cli-token: $t" "http://127.0.0.1:$PORT/api/tunnel/$a" || true); echo "$out"; }
+print_tunnel_status(){
+  local out; out=$(api_json "/api/tunnel/status" 2>/dev/null || true);
+  if [[ -z "$out" ]]; then echo "Tunnel      : UNKNOWN"; return; fi
+  echo "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const x=JSON.parse(s); const d=x.data||x; console.log("Tunnel      : "+(d.enabled===true?"ENABLED":d.enabled===false?"DISABLED":d.status||"UNKNOWN")); if(d.connected!==undefined) console.log("Connection  : "+(d.connected?"CONNECTED":"DISCONNECTED")); if(d.publicUrl) console.log("Public URL  : "+d.publicUrl); if(d.error) console.log("Error       : "+d.error)}catch(e){console.log("Tunnel      : UNKNOWN");}})';
+}
+show_info(){
+  echo; echo "========== 9Router ==========";
+  docker ps --filter "name=^/$CONTAINER_NAME$" --format 'Container   : {{.Names}}\nStatus      : {{.Status}}\nImage       : {{.Image}}\nPorts       : {{.Ports}}';
+  local t; t=$(cli_token || true); if [[ -n "$t" ]]; then echo "CLI Token   : $t"; else echo "CLI Token   : UNAVAILABLE"; fi
+  echo "Dashboard   : http://$(hostname -I | awk '{print $1}'):$PORT";
+  print_tunnel_status;
+  echo "==============================";
+}
+install_9router(){ install_deps; ensure_docker; write_env; docker pull "$IMAGE"; run_container; write_update; echo "9Router installed."; if ask "Enable Tunnel now? [y/N]: "; then [[ $REPLY =~ ^[Yy]$ ]] && { tunnel enable; sleep 2; }; fi; show_info; }
+status(){ show_info; }
+tunnel_status(){ echo; echo "========== Tunnel status =========="; print_tunnel_status; local t; t=$(cli_token || true); [[ -n "$t" ]] && echo "CLI Token   : $t" || echo "CLI Token   : UNAVAILABLE"; echo "==================================="; }
 uninstall(){ ask "Delete 9Router and ALL data? [y/N]: " || return; [[ $REPLY =~ ^[Yy]$ ]] || return; systemctl disable --now 9router-update.timer 2>/dev/null || true; rm -f "$UPDATE_SERVICE" "$UPDATE_TIMER"; docker rm -f "$CONTAINER_NAME" 2>/dev/null || true; rm -rf "$APP_DIR"; systemctl daemon-reload; echo "Removed."; }
 menu(){ while :; do cat >&4 <<'EOF'
 
@@ -73,6 +96,6 @@ menu(){ while :; do cat >&4 <<'EOF'
 0) Exit
 EOF
 ask "Select: " || fail "No interactive terminal. Run: bash <(curl -fsSL https://raw.githubusercontent.com/xpersian/9router-installer/main/install-9router.sh)"
-case "$REPLY" in 1) install_9router;;2) "$UPDATE_SCRIPT";;3) status;;4) tunnel_status;;5) tunnel enable;;6) tunnel disable;;7) docker logs --tail 150 "$CONTAINER_NAME";;8) docker restart "$CONTAINER_NAME";;9) uninstall;;0) exit;;*) warn "Invalid option.";;esac; done; }
+case "$REPLY" in 1) install_9router;;2) "$UPDATE_SCRIPT"; show_info;;3) status;;4) tunnel_status;;5) tunnel enable; sleep 2; tunnel_status;;6) tunnel disable; sleep 1; tunnel_status;;7) docker logs --tail 150 "$CONTAINER_NAME";;8) docker restart "$CONTAINER_NAME"; sleep 3; show_info;;9) uninstall;;0) exit;;*) warn "Invalid option.";;esac; done; }
 need_root
 case "${1:-menu}" in install) install_9router;;menu) menu;;*) fail "Usage: $0 [install|menu]";;esac
