@@ -74,7 +74,7 @@ EOF
 systemctl daemon-reload; systemctl enable --now 9router-update.timer; }
 cli_token(){ docker exec "$CONTAINER_NAME" node -e 'const fs=require("fs"),crypto=require("crypto");const r=p=>{try{return fs.readFileSync(p,"utf8").trim()}catch(e){return ""}};const i=r("/app/data/machine-id"),s=r("/app/data/auth/cli-secret");if(!i||!s)process.exit(2);process.stdout.write(crypto.createHash("sha256").update(i+"9r-cli-auth"+s).digest("hex").slice(0,16));' 2>/dev/null; }
 api_json(){ local path="$1" t; t=$(cli_token || true); [[ -n "$t" ]] || { warn "CLI token unavailable."; return 1; }; curl -fsS --max-time 15 -H "x-9r-cli-token: $t" "http://127.0.0.1:$PORT$path"; }
-tunnel(){ local a=$1 t out; require_installed || return 1; t=$(cli_token || true); [[ -n "$t" ]] || { warn "CLI token unavailable."; return 1; }; out=$(curl -sS --max-time 60 -X POST -H "x-9r-cli-token: $t" "http://127.0.0.1:$PORT/api/tunnel/$a" || true); [[ -n "$out" ]] && echo "$out" || warn "Tunnel API request failed."; }
+tunnel(){ local a=$1 t out; require_installed || return 1; t=$(cli_token || true); [[ -n "$t" ]] || { warn "CLI token unavailable."; return 1; }; out=$(curl -sS --max-time 60 -X POST -H "x-9r-cli-token: $t" "http://127.0.0.1:$PORT/api/tunnel/$a" || true); [[ -n "$out" ]] || { warn "Tunnel API request failed."; return 1; }; return 0; }
 print_tunnel_status(){
   if ! require_installed >/dev/null 2>&1; then echo "Tunnel      : NOT INSTALLED"; return 0; fi
   local out; out=$(api_json "/api/tunnel/status" 2>/dev/null || true)
@@ -98,34 +98,31 @@ process.stdin.on("data",d=>s+=d).on("end",()=>{
 show_info(){
   echo; echo "========== 9Router ==========";
   if ! container_exists; then
-    echo "Status      : NOT INSTALLED";
-    echo "Dashboard   : -";
-    echo "Password    : -";
-    echo "CLI Token   : -";
-    echo "Tunnel      : NOT INSTALLED";
-    echo "==============================";
-    return 0;
+    echo "Status      : NOT INSTALLED"; echo "Dashboard   : -"; echo "Password    : -"; echo "CLI Token   : -"; echo "Tunnel      : NOT INSTALLED"; echo "=============================="; return 0;
   fi
   docker ps --filter "name=^/$CONTAINER_NAME$" --format 'Container   : {{.Names}}\nStatus      : {{.Status}}\nImage       : {{.Image}}\nPorts       : {{.Ports}}';
   local t p; t=$(cli_token || true); p=$(get_password); [[ -n "$t" ]] && echo "CLI Token   : $t" || echo "CLI Token   : UNAVAILABLE"; [[ -n "$p" ]] && echo "Password    : $p" || echo "Password    : UNKNOWN";
-  echo "Dashboard   : http://$(hostname -I | awk '{print $1}'):$PORT";
-  print_tunnel_status;
-  echo "==============================";
+  echo "Dashboard   : http://$(hostname -I | awk '{print $1}'):$PORT"; print_tunnel_status; echo "==============================";
 }
 install_9router(){ install_deps; ensure_docker; write_env; docker pull "$IMAGE"; run_container; write_update; echo "9Router installed."; echo "Dashboard password: $(get_password)"; if ask "Enable Tunnel now? [y/N]: "; then [[ $REPLY =~ ^[Yy]$ ]] && { tunnel enable; sleep 2; }; fi; show_info; }
 status(){ show_info; }
 tunnel_status(){ echo; echo "========== Tunnel status =========="; print_tunnel_status; if container_running; then local t; t=$(cli_token || true); [[ -n "$t" ]] && echo "CLI Token   : $t" || echo "CLI Token   : UNAVAILABLE"; fi; echo "==================================="; }
 change_tunnel(){
   require_installed || return 0
-  echo; echo "========== Change Tunnel =========="
-  echo "Current:"; print_tunnel_status; echo
-  echo "1) Restart Tunnel (new URL)"
-  echo "2) Disable then Enable (new URL)"
-  echo "0) Back"
+  echo; echo "========== Change Tunnel =========="; echo "Current:"; print_tunnel_status; echo
+  echo "1) Restart Tunnel (refresh URL)"; echo "2) Disable then Enable (refresh URL)"; echo "0) Back"
   ask "Select: " || return 0
   case "$REPLY" in
-    1) tunnel disable; sleep 2; tunnel enable; sleep 3; print_tunnel_status;;
-    2) tunnel disable; sleep 3; tunnel enable; sleep 3; print_tunnel_status;;
+    1)
+      echo "Restarting Tunnel..."
+      if tunnel restart; then sleep 3; echo "Tunnel refreshed successfully."; else warn "Tunnel restart failed."; return 0; fi
+      echo; echo "Updated:"; print_tunnel_status;;
+    2)
+      echo "Disabling Tunnel..."
+      if tunnel disable; then sleep 3; else warn "Tunnel disable failed."; return 0; fi
+      echo "Enabling Tunnel..."
+      if tunnel enable; then sleep 3; echo "Tunnel refreshed successfully."; else warn "Tunnel enable failed."; return 0; fi
+      echo; echo "Updated:"; print_tunnel_status;;
     0) return 0;;
     *) warn "Invalid option.";;
   esac
@@ -152,8 +149,8 @@ case "$REPLY" in
 2) if [[ -x "$UPDATE_SCRIPT" ]]; then "$UPDATE_SCRIPT"; show_info; else warn "9Router is not installed."; fi;;
 3) status;;
 4) tunnel_status;;
-5) tunnel enable; sleep 2; tunnel_status;;
-6) tunnel disable; sleep 1; tunnel_status;;
+5) if tunnel enable; then sleep 2; tunnel_status; fi;;
+6) if tunnel disable; then sleep 1; tunnel_status; fi;;
 7) if require_installed; then docker logs --tail 150 "$CONTAINER_NAME"; fi;;
 8) if require_installed; then docker restart "$CONTAINER_NAME"; sleep 3; show_info; fi;;
 9) uninstall;;
