@@ -8,19 +8,19 @@ if [[ -e /dev/tty ]]; then exec 3</dev/tty 4>/dev/tty 2>/dev/null || true; fi
 ask(){ local p="$1"; [[ -e /dev/fd/3 ]] || return 1; printf '%s' "$p" >&4; IFS= read -r REPLY <&3; }
 install_deps(){ apt-get update -qq; apt-get install -y -qq ca-certificates curl openssl >/dev/null; }
 ensure_docker(){ command -v docker >/dev/null 2>&1 || { curl -fsSL https://get.docker.com | sh; }; systemctl enable --now docker; }
-generate_password(){ openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 32; }
+generate_password(){ openssl rand -base64 48 | tr -dc 'A-Za-z0-9@#%+=_' | head -c 24; }
 write_env(){
   mkdir -p "$DATA_DIR/auth"; chmod 700 "$APP_DIR" "$DATA_DIR" "$DATA_DIR/auth";
   [[ -s "$DATA_DIR/machine-id" ]] || openssl rand -hex 32 > "$DATA_DIR/machine-id";
   [[ -s "$DATA_DIR/auth/cli-secret" ]] || openssl rand -hex 32 > "$DATA_DIR/auth/cli-secret";
   chmod 600 "$DATA_DIR/machine-id" "$DATA_DIR/auth/cli-secret";
   if [[ -f "$ENV_FILE" ]]; then
-    grep -q '^INITIAL_PASSWORD=' "$ENV_FILE" || { local p; p=$(generate_password); printf '\nINITIAL_PASSWORD=%s\n' "$p" >> "$ENV_FILE"; }
+    grep -q '^INITIAL_PASSWORD=' "$ENV_FILE" || { local p; p=$(generate_password); printf '\nINITIAL_PASSWORD=%s\n' "$p" >> "$ENV_FILE"; chmod 600 "$ENV_FILE"; }
     return
   fi
   local password
   echo >&4
-  ask "Dashboard password (leave empty = secure random 32 chars): " || true
+  ask "Dashboard password (leave empty = secure random 24 chars): " || true
   password="${REPLY:-}"
   if [[ -z "$password" ]]; then password=$(generate_password); fi
   if (( ${#password} < 8 )); then fail "Password must be at least 8 characters."; fi
@@ -39,6 +39,7 @@ ENABLE_REQUEST_LOGS=false
 EOF
   chmod 600 "$ENV_FILE";
 }
+get_password(){ [[ -f "$ENV_FILE" ]] && sed -n 's/^INITIAL_PASSWORD=//p' "$ENV_FILE" | head -n1 || true; }
 run_container(){ docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true; docker run -d --name "$CONTAINER_NAME" --restart unless-stopped -p "$PORT:$PORT" --env-file "$ENV_FILE" -v "$DATA_DIR:/app/data" "$IMAGE" >/dev/null; for _ in {1..20}; do docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME" && break; sleep 1; done; docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME" || fail "9Router failed to start."; }
 write_update(){ cat > "$UPDATE_SCRIPT" <<'EOF'
 #!/usr/bin/env bash
@@ -68,28 +69,20 @@ RandomizedDelaySec=10m
 WantedBy=timers.target
 EOF
 systemctl daemon-reload; systemctl enable --now 9router-update.timer; }
-cli_token(){
-  docker exec "$CONTAINER_NAME" node -e 'const fs=require("fs"),crypto=require("crypto");const r=p=>{try{return fs.readFileSync(p,"utf8").trim()}catch(e){return ""}};const i=r("/app/data/machine-id"),s=r("/app/data/auth/cli-secret");if(!i||!s)process.exit(2);process.stdout.write(crypto.createHash("sha256").update(i+"9r-cli-auth"+s).digest("hex").slice(0,16));' 2>/dev/null;
-}
+cli_token(){ docker exec "$CONTAINER_NAME" node -e 'const fs=require("fs"),crypto=require("crypto");const r=p=>{try{return fs.readFileSync(p,"utf8").trim()}catch(e){return ""}};const i=r("/app/data/machine-id"),s=r("/app/data/auth/cli-secret");if(!i||!s)process.exit(2);process.stdout.write(crypto.createHash("sha256").update(i+"9r-cli-auth"+s).digest("hex").slice(0,16));' 2>/dev/null; }
 api_json(){ local path="$1" t; t=$(cli_token || true); [[ -n "$t" ]] || fail "CLI token unavailable. Check /opt/9router/data/machine-id and auth/cli-secret."; curl -fsS --max-time 15 -H "x-9r-cli-token: $t" "http://127.0.0.1:$PORT$path"; }
 tunnel(){ local a=$1 t out; t=$(cli_token || true); [[ -n "$t" ]] || fail "CLI token unavailable. Check /opt/9router/data/machine-id and auth/cli-secret."; out=$(curl -sS --max-time 60 -X POST -H "x-9r-cli-token: $t" "http://127.0.0.1:$PORT/api/tunnel/$a" || true); echo "$out"; }
 print_tunnel_status(){
-  local out; out=$(api_json "/api/tunnel/status" 2>/dev/null || true);
+  local out; out=$(api_json "/api/tunnel/status" 2>/dev/null || true)
   if [[ -z "$out" ]]; then echo "Tunnel      : UNKNOWN"; return; fi
-  echo "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const x=JSON.parse(s);const d=x.data||x;console.log("Tunnel      : "+(d.enabled===true?"ENABLED":d.enabled===false?"DISABLED":d.status||"UNKNOWN"));if(d.connected!==undefined)console.log("Connection  : "+(d.connected?"CONNECTED":"DISCONNECTED"));if(d.publicUrl)console.log("Public URL  : "+d.publicUrl);if(d.tunnelUrl)console.log("Tunnel URL  : "+d.tunnelUrl);if(d.shortId)console.log("Short ID    : "+d.shortId);if(d.error)console.log("Error       : "+d.error)}catch(e){console.log("Tunnel      : UNKNOWN");}})';
-}
-get_password(){
-  if [[ -f "$ENV_FILE" ]]; then
-    local p; p=$(sed -n 's/^INITIAL_PASSWORD=//p' "$ENV_FILE" | head -n1 || true)
-    [[ -n "$p" ]] && printf '%s' "$p" && return
-  fi
-  printf '%s' "UNKNOWN"
+  if command -v node >/dev/null 2>&1; then
+    printf '%s' "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const x=JSON.parse(s),d=x.data||x;console.log("Tunnel      : "+(d.enabled===true?"ENABLED":d.enabled===false?"DISABLED":d.status||"UNKNOWN"));if(d.connected!==undefined)console.log("Connection  : "+(d.connected?"CONNECTED":"DISCONNECTED"));if(d.publicUrl)console.log("Public URL  : "+d.publicUrl);if(d.tunnelUrl)console.log("Tunnel URL  : "+d.tunnelUrl);if(d.shortId)console.log("Short ID    : "+d.shortId);if(d.error)console.log("Error       : "+d.error)}catch(e){console.log("Tunnel      : UNKNOWN")}})'
+  else echo "Tunnel API  : $out"; fi
 }
 show_info(){
   echo; echo "========== 9Router ==========";
   docker ps --filter "name=^/$CONTAINER_NAME$" --format 'Container   : {{.Names}}\nStatus      : {{.Status}}\nImage       : {{.Image}}\nPorts       : {{.Ports}}';
-  local t; t=$(cli_token || true); if [[ -n "$t" ]]; then echo "CLI Token   : $t"; else echo "CLI Token   : UNAVAILABLE"; fi
-  echo "Password    : $(get_password)";
+  local t p; t=$(cli_token || true); p=$(get_password); [[ -n "$t" ]] && echo "CLI Token   : $t" || echo "CLI Token   : UNAVAILABLE"; [[ -n "$p" ]] && echo "Password    : $p" || echo "Password    : UNKNOWN";
   echo "Dashboard   : http://$(hostname -I | awk '{print $1}'):$PORT";
   print_tunnel_status;
   echo "==============================";
