@@ -76,8 +76,10 @@ print_tunnel_status(){
   local out; out=$(api_json "/api/tunnel/status" 2>/dev/null || true)
   if [[ -z "$out" ]]; then echo "Tunnel      : UNKNOWN"; return; fi
   if command -v node >/dev/null 2>&1; then
-    printf '%s' "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const x=JSON.parse(s),d=x.data||x;console.log("Tunnel      : "+(d.enabled===true?"ENABLED":d.enabled===false?"DISABLED":d.status||"UNKNOWN"));if(d.connected!==undefined)console.log("Connection  : "+(d.connected?"CONNECTED":"DISCONNECTED"));if(d.publicUrl)console.log("Public URL  : "+d.publicUrl);if(d.tunnelUrl)console.log("Tunnel URL  : "+d.tunnelUrl);if(d.shortId)console.log("Short ID    : "+d.shortId);if(d.error)console.log("Error       : "+d.error)}catch(e){console.log("Tunnel      : UNKNOWN")}})'
-  else echo "Tunnel API  : $out"; fi
+    printf '%s' "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const x=JSON.parse(s),t=x.tunnel||x.data?.tunnel||x.data||x,ts=x.tailscale||x.data?.tailscale||{};console.log("Tunnel      : "+(t.enabled===true?"ENABLED":t.enabled===false?"DISABLED":t.status||"UNKNOWN"));if(t.running!==undefined)console.log("Running     : "+(t.running?"YES":"NO"));if(t.publicUrl)console.log("Public URL  : "+t.publicUrl);if(t.tunnelUrl)console.log("Tunnel URL  : "+t.tunnelUrl);if(t.shortId)console.log("Short ID    : "+t.shortId);if(t.error)console.log("Error       : "+t.error);if(ts.enabled!==undefined)console.log("Tailscale   : "+(ts.enabled?"ENABLED":"DISABLED"));}catch(e){console.log("Tunnel      : UNKNOWN")}})'
+  else
+    echo "Tunnel API  : $out"
+  fi
 }
 show_info(){
   echo; echo "========== 9Router ==========";
