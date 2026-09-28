@@ -166,6 +166,44 @@ normalize_existing_env() {
   chmod 600 "$ENV_FILE"
 }
 
+migrate_legacy_data() {
+  if [ -f "/var/lib/9router/db/data.sqlite" ] && [ ! -f "$DATA_DIR/db/data.sqlite" ]; then
+    echo "Migrating existing data from /var/lib/9router..."
+    mkdir -p "$DATA_DIR"
+    cp -a /var/lib/9router/. "$DATA_DIR/"
+  fi
+}
+
+normalize_existing_env() {
+  [ -f "$ENV_FILE" ] || return
+
+  if grep -q '^DATA_DIR=' "$ENV_FILE"; then
+    sed -i 's#^DATA_DIR=.*#DATA_DIR=/app/data#' "$ENV_FILE"
+  else
+    printf 'DATA_DIR=/app/data\n' >> "$ENV_FILE"
+  fi
+
+  if grep -q '^PORT=' "$ENV_FILE"; then
+    sed -i 's#^PORT=.*#PORT=20128#' "$ENV_FILE"
+  else
+    printf 'PORT=20128\n' >> "$ENV_FILE"
+  fi
+
+  if grep -q '^HOSTNAME=' "$ENV_FILE"; then
+    sed -i 's#^HOSTNAME=.*#HOSTNAME=0.0.0.0#' "$ENV_FILE"
+  else
+    printf 'HOSTNAME=0.0.0.0\n' >> "$ENV_FILE"
+  fi
+
+  if grep -q '^NODE_ENV=' "$ENV_FILE"; then
+    sed -i 's#^NODE_ENV=.*#NODE_ENV=production#' "$ENV_FILE"
+  else
+    printf 'NODE_ENV=production\n' >> "$ENV_FILE"
+  fi
+
+  chmod 600 "$ENV_FILE"
+}
+
 run_container() {
   docker rm -f "$APP_NAME" >/dev/null 2>&1 || true
   docker run -d \
