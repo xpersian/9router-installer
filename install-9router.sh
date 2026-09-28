@@ -16,9 +16,7 @@ read_tty() {
   local prompt="$1"
   local __var="$2"
   local value
-  if [ ! -r /dev/tty ]; then
-    die "Interactive terminal (/dev/tty) is required for first-time setup."
-  fi
+  [ -r /dev/tty ] || die "Interactive terminal (/dev/tty) is required for first-time setup."
   read -r -p "$prompt" value </dev/tty
   printf -v "$__var" '%s' "$value"
 }
@@ -27,9 +25,7 @@ read_secret_tty() {
   local prompt="$1"
   local __var="$2"
   local value
-  if [ ! -r /dev/tty ]; then
-    die "Interactive terminal (/dev/tty) is required for first-time password setup."
-  fi
+  [ -r /dev/tty ] || die "Interactive terminal (/dev/tty) is required for password setup."
   read -r -s -p "$prompt" value </dev/tty
   echo
   printf -v "$__var" '%s' "$value"
@@ -52,15 +48,18 @@ install_deps() {
 detect_ipv4() {
   local ip
   ip=$(curl -4 -fsS --max-time 10 https://api.ipify.org || true)
+
   if [[ ! "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
     ip=$(curl -4 -fsS --max-time 10 https://ipv4.icanhazip.com | tr -d '[:space:]' || true)
   fi
+
   [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || die "Could not detect the server IPv4 address."
   printf '%s' "$ip"
 }
 
 configure_url() {
   local has_domain domain server_ip
+
   echo
   echo "=== 9router URL configuration ==="
   read_tty "Do you have a domain? (y/n): " has_domain
@@ -71,12 +70,15 @@ configure_url() {
     domain="\${domain#https://}"
     domain="\${domain%/}"
     [ -n "$domain" ] || die "Domain cannot be empty."
+
     BASE_URL="http://$domain:$PORT"
+
     echo "Direct URL: $BASE_URL"
-    echo "Note: this installer does not configure TLS/reverse proxy. Use HTTPS only after configuring one."
+    echo "This installer does not configure TLS/reverse proxy."
   else
     server_ip=$(detect_ipv4)
     BASE_URL="http://$server_ip:$PORT"
+
     echo "Detected IPv4: $server_ip"
     echo "Direct URL: $BASE_URL"
   fi
@@ -84,16 +86,77 @@ configure_url() {
 
 prompt_password() {
   local p1 p2
+
   while true; do
     read_secret_tty "Choose dashboard password: " p1
+
     [ -n "$p1" ] || { echo "Password cannot be empty."; continue; }
     [ "\${#p1}" -ge 6 ] || { echo "Password must be at least 6 characters."; continue; }
 
     read_secret_tty "Confirm dashboard password: " p2
-    [ "$p1" = "$p2" ] && break
+
+    if [ "$p1" = "$p2" ]; then
+      break
+    fi
+
     echo "Passwords do not match. Try again."
   done
+
   INITIAL_PASSWORD="$p1"
+}
+
+repair_existing_env() {
+  local existing_password old_public_url host_part server_ip
+
+  existing_password=$(grep -E '^INITIAL_PASSWORD=' "$APP_DIR/.env" | head -n1 | cut -d= -f2- || true)
+
+  # Fix the old piped-script bug: read received EOF and created an empty password.
+  if [ -z "$existing_password" ]; then
+    echo
+    echo "The existing configuration has an empty INITIAL_PASSWORD."
+    prompt_password
+
+    if grep -q '^INITIAL_PASSWORD=' "$APP_DIR/.env"; then
+      sed -i '/^INITIAL_PASSWORD=/d' "$APP_DIR/.env"
+    fi
+
+    printf 'INITIAL_PASSWORD=%s\n' "$INITIAL_PASSWORD" >> "$APP_DIR/.env"
+  fi
+
+  old_public_url=$(grep -E '^NEXT_PUBLIC_BASE_URL=' "$APP_DIR/.env" | head -n1 | cut -d= -f2- || true)
+
+  if [ -z "$old_public_url" ]; then
+    server_ip=$(detect_ipv4)
+    old_public_url="http://$server_ip:$PORT"
+    printf 'NEXT_PUBLIC_BASE_URL=%s\n' "$old_public_url" >> "$APP_DIR/.env"
+  else
+    host_part="$old_public_url"
+    host_part="\${host_part#http://}"
+    host_part="\${host_part#https://}"
+
+    # Old versions of this installer could accidentally save an IPv6 URL.
+    if [[ "$host_part" == *:*:* ]]; then
+      server_ip=$(detect_ipv4)
+      old_public_url="http://$server_ip:$PORT"
+      sed -i '/^NEXT_PUBLIC_BASE_URL=/d' "$APP_DIR/.env"
+      printf 'NEXT_PUBLIC_BASE_URL=%s\n' "$old_public_url" >> "$APP_DIR/.env"
+      echo "Repaired invalid IPv6 public URL: $old_public_url"
+    fi
+  fi
+
+  if ! grep -q '^BASE_URL=' "$APP_DIR/.env"; then
+    printf 'BASE_URL=%s\n' "$old_public_url" >> "$APP_DIR/.env"
+  fi
+
+  if ! grep -q '^CLOUD_URL=' "$APP_DIR/.env"; then
+    printf 'CLOUD_URL=https://9router.com\n' >> "$APP_DIR/.env"
+  fi
+
+  if ! grep -q '^NEXT_PUBLIC_CLOUD_URL=' "$APP_DIR/.env"; then
+    printf 'NEXT_PUBLIC_CLOUD_URL=https://9router.com\n' >> "$APP_DIR/.env"
+  fi
+
+  chmod 600 "$APP_DIR/.env"
 }
 
 create_or_update_env() {
@@ -120,33 +183,11 @@ ENABLE_REQUEST_LOGS=false
 AUTH_COOKIE_SECURE=false
 REQUIRE_API_KEY=false
 EOF
+
     chmod 600 "$APP_DIR/.env"
-    echo "Configuration saved to $APP_DIR/.env"
-    echo "Dashboard password: the password you just chose."
-    return
-  fi
-
-  local existing_password
-  existing_password=$(grep -E '^INITIAL_PASSWORD=' "$APP_DIR/.env" | head -n1 | cut -d= -f2- || true)
-
-  if [ -z "$existing_password" ]; then
-    echo
-    echo "The existing .env has an empty INITIAL_PASSWORD."
-    prompt_password
-    sed -i '/^INITIAL_PASSWORD=/d' "$APP_DIR/.env"
-    printf 'INITIAL_PASSWORD=%s\n' "$INITIAL_PASSWORD" >> "$APP_DIR/.env"
-    chmod 600 "$APP_DIR/.env"
-    echo "INITIAL_PASSWORD was repaired."
-  fi
-
-  if ! grep -q '^BASE_URL=' "$APP_DIR/.env"; then
-    local old_public_url
-    old_public_url=$(grep -E '^NEXT_PUBLIC_BASE_URL=' "$APP_DIR/.env" | head -n1 | cut -d= -f2- || true)
-    [ -n "$old_public_url" ] && printf 'BASE_URL=%s\n' "$old_public_url" >> "$APP_DIR/.env"
-  fi
-
-  if ! grep -q '^CLOUD_URL=' "$APP_DIR/.env"; then
-    printf 'CLOUD_URL=https://9router.com\n' >> "$APP_DIR/.env"
+    echo "Configuration saved."
+  else
+    repair_existing_env
   fi
 }
 
@@ -159,18 +200,21 @@ prepare_build_swap() {
 
   if [ "\${total_swap:-0}" -lt 2147483648 ]; then
     echo "Less than 2 GiB swap detected. Creating temporary 2 GiB build swap..."
+
     if [ ! -e "$BUILD_SWAP" ]; then
       fallocate -l 2G "$BUILD_SWAP"
       chmod 600 "$BUILD_SWAP"
       mkswap "$BUILD_SWAP" >/dev/null
     fi
+
     swapon "$BUILD_SWAP"
     BUILD_SWAP_CREATED="true"
   fi
 }
 
 cleanup_build_swap() {
-  if [ "$BUILD_SWAP_CREATED" = "true" ] && swapon --show=NAME --noheadings 2>/dev/null | grep -qx "$BUILD_SWAP"; then
+  if [ "$BUILD_SWAP_CREATED" = "true" ] &&
+     swapon --show=NAME --noheadings 2>/dev/null | grep -qx "$BUILD_SWAP"; then
     swapoff "$BUILD_SWAP" || true
     rm -f "$BUILD_SWAP"
   fi
@@ -190,8 +234,10 @@ install_app() {
 
   prepare_build_swap
   trap cleanup_build_swap EXIT
+
   echo "Building 9router..."
   MAKEFLAGS="-j1" NODE_OPTIONS="--max-old-space-size=768" npm run build
+
   cleanup_build_swap
   trap - EXIT
 
@@ -206,7 +252,7 @@ open_firewall() {
     ufw allow "$PORT/tcp" comment '9Router' >/dev/null || true
     echo "UFW: TCP $PORT allowed."
   else
-    echo "UFW is not active; no firewall rule was changed."
+    echo "UFW is not active; no local firewall rule was changed."
     echo "If your VPS provider has a separate firewall/security group, allow TCP $PORT there too."
   fi
 }
@@ -244,9 +290,9 @@ show_result() {
   echo "Dashboard: \${url:-http://SERVER_IP:$PORT}/dashboard"
   echo "API:       \${url:-http://SERVER_IP:$PORT}/v1"
   echo
-  echo "For first-time setup, login with the dashboard password you chose during installation."
-  echo "To check status: pm2 status"
-  echo "To view logs:    pm2 logs $APP_NAME"
+  echo "The dashboard password is the one you chose during setup."
+  echo "Status: pm2 status"
+  echo "Logs:   pm2 logs $APP_NAME"
   echo "========================================"
 }
 
