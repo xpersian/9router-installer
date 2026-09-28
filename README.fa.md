@@ -27,7 +27,7 @@
 به‌عنوان root اجرا کنید:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xpersian/9router-installer/main/install-9router.sh | bash
+curl -fsSL "https://raw.githubusercontent.com/xpersian/9router-installer/main/install-9router.sh?cb=$(date +%s)" | bash
 ```
 
 در اولین اجرا اسکریپت از شما دامنه و رمز Dashboard را می‌پرسد. همین دستور برای آپدیت‌های بعدی نیز استفاده می‌شود.
