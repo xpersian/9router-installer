@@ -1,125 +1,217 @@
-# نصب‌کننده npm برای 9Router
+# نصب‌کننده Docker برای 9Router
 
 [English](README.md) | فارسی
 
-اسکریپت نصب و آپدیت یک‌خطی برای [9Router](https://github.com/decolua/9router) از سورس روی Ubuntu/Debian.
+نصب سریع 9Router روی VPS با استفاده از Docker Image منتشرشده پروژه اصلی.
 
 ## امکانات
 
-- نصب Node.js 22، Git، ابزارهای Build و PM2 در صورت نیاز
-- Clone و Update سورس رسمی 9Router
-- Build و اجرای مستقیم 9Router با npm و PM2
-- اجرای سرویس روی پورت 20128 و آدرس 0.0.0.0
-- ساخت خودکار Secretهای تصادفی برای JWT و API
-- انتخاب رمز Dashboard به‌صورت تعاملی با تأیید دوباره
-- در نصب اول اگر برای رمز فقط Enter بزنید، یک رمز ساده و نسبتاً امن تولید و واضح نمایش داده می‌شود
-- در اجراهای بعدی رمز قبلی حفظ می‌شود و هرگز بدون نیاز تغییر نمی‌کند
-- سازگار با اجرای `curl ... | bash` چون ورودی‌های تعاملی را مستقیماً از `/dev/tty` می‌گیرد
-- پرسیدن اینکه دامنه می‌خواهید یا نه؛ در غیر این صورت IPv4 عمومی سرور را پیدا می‌کند
-- تعمیر نصب‌های قبلی که به‌اشتباه IPv6 را در URL ذخیره کرده‌اند
-- حفظ `.env` و داده‌های قبلی هنگام آپدیت
-- تشخیص ابزارهای رایج Firewall و اعلام هشدار در صورت نصب بودن؛ بدون باز کردن یا تغییر هیچ پورتی
-- بررسی اینکه 9Router روی پورت موردنظر Listen است و Dashboard محلی پاسخ می‌دهد
-- ساخت Swap موقت هنگام Build اگر مجموع Swap کمتر از 2 گیگابایت باشد
+- استفاده از Image آماده decolua/9router:latest
+- بدون نصب Node.js و بدون npm build روی VPS
+- نگهداری Data در /opt/9router/data
+- اجرای خودکار بعد از Reboot با restart policy داکر
+- اجرای سرویس روی پورت 20128
+- در صورت نداشتن دامنه، تشخیص خودکار IPv4 عمومی
+- دریافت رمز Dashboard در اولین نصب
+- با Enter خالی، تولید و نمایش یک رمز ساده و نسبتاً امن
+- حفظ رمز قبلی در اجراهای بعدی
+- مدیریت Cloudflare Quick Tunnel از منو: وضعیت، فعال، غیرفعال و Refresh URL
+- حفظ وضعیت فعال بودن Tunnel توسط خود 9Router و امکان Resume بعد از Restart
+- آپدیت خودکار روزانه با systemd timer
+- فقط تشخیص Firewall و نمایش هشدار؛ هیچ Ruleی تغییر نمی‌کند
+- حذف کامل 9Router با تأیید
 
-## نصب یا آپدیت
+## نصب
 
-به‌عنوان root اجرا کنید:
+با root اجرا کنید:
 
-```bash
+~~~bash
 curl -fsSL https://github.com/xpersian/9router-installer/archive/refs/heads/main.tar.gz | tar -xzO --wildcards '*/9router.sh' | bash
-```
+~~~
 
-در اولین اجرا اسکریپت از شما دامنه و رمز Dashboard را می‌پرسد. همین دستور برای آپدیت‌های بعدی نیز استفاده می‌شود.
+بعد از اجرا منوی شماره‌ای نمایش داده می‌شود.
 
-در نصب اول می‌توانید رمز دلخواه وارد کنید یا فقط Enter بزنید تا یک رمز خودکار ساده و نسبتاً امن ساخته شود. رمز تولیدشده واضح نمایش داده می‌شود و در تمام آپدیت‌های بعدی حفظ خواهد شد. اگر رمز قبلی وجود داشته باشد، اسکریپت دوباره از شما رمز نمی‌خواهد و آن را تغییر نمی‌دهد.
+## منو
 
-اگر دامنه ندارید:
+~~~text
+1) Install / Update 9Router
+2) Update now
+3) Status
+4) Tunnel status
+5) Enable Tunnel
+6) Disable Tunnel
+7) Refresh Tunnel URL
+8) Show logs
+9) Restart 9Router
+10) Uninstall 9Router
+0) Exit
+~~~
 
-```text
+## نصب اول
+
+### آدرس
+
+اسکریپت می‌پرسد دامنه دارید یا نه.
+
+بدون دامنه، IPv4 عمومی VPS را پیدا می‌کند:
+
+~~~text
 http://SERVER_IPV4:20128
-```
+~~~
 
-اگر دامنه وارد کنید:
+با دامنه:
 
-```text
+~~~text
 http://DOMAIN:20128
-```
+~~~
 
 این installer خودش HTTPS، Nginx، Apache یا Reverse Proxy را تنظیم نمی‌کند.
 
-برای آپدیت 9Router کافی است همان دستور را دوباره اجرا کنید. فایل `.env` و داده‌های برنامه حفظ می‌شوند.
+### رمز Dashboard
 
-## منوی مدیریت
+در نصب اول:
 
-با اجرای دستور یک‌خطی بدون آرگومان، منوی زیر نمایش داده می‌شود:
+~~~text
+Dashboard password (Enter = auto-generate):
+~~~
 
-```text
-1) Install / Update 9Router
-2) Status
-3) Show logs
-4) Restart 9Router
-5) Uninstall 9Router
-0) Exit
-```
+می‌توانید رمز دلخواه وارد کنید یا فقط Enter بزنید.
 
-در صورت نیاز می‌توان از دستورات مستقیم `install` یا `uninstall` نیز استفاده کرد.
+رمز خودکار مشابه این خواهد بود:
 
-## Dashboard
+~~~text
+9Router@03cb644633
+~~~
 
-آدرس:
+رمز دقیق تولیدشده نمایش داده شده و در /opt/9router/.env ذخیره می‌شود.
 
-```text
-http://SERVER_IPV4:20128/dashboard
-```
+در اجراهای بعدی رمز موجود حفظ می‌شود و دوباره تولید نمی‌شود.
 
-یا آدرس دامنه‌ای که هنگام نصب تنظیم کرده‌اید.
+## Docker
 
-رمز ورود، همان رمزی است که در اولین نصب انتخاب کرده‌اید. اگر نصب قدیمی دارای `INITIAL_PASSWORD` خالی باشد، اسکریپت دوباره رمز می‌گیرد و با Enter خالی می‌تواند یک رمز خودکار بسازد. در غیر این صورت رمز موجود بدون تغییر حفظ می‌شود.
+کانتینر با تنظیماتی مشابه این اجرا می‌شود:
 
-## حذف کامل
+~~~bash
+docker run -d \
+  --name 9router \
+  --restart unless-stopped \
+  -p 0.0.0.0:20128:20128 \
+  --env-file /opt/9router/.env \
+  -v /opt/9router/data:/app/data \
+  decolua/9router:latest
+~~~
 
-برای حذف کامل 9Router و داده‌های دائمی آن:
+Image اصلی PORT=20128، HOSTNAME=0.0.0.0 و DATA_DIR=/app/data را استفاده می‌کند.
 
-```bash
-curl -fsSL https://github.com/xpersian/9router-installer/archive/refs/heads/main.tar.gz | tar -xzO --wildcards '*/9router.sh' | bash -s -- uninstall
-```
+## تنظیمات محیطی
 
-اسکریپت برای تأیید از شما می‌خواهد دقیقاً `REMOVE` را وارد کنید.
+متغیرهای اصلی upstream که installer تنظیم می‌کند:
 
-موارد زیر حذف می‌شوند:
+~~~text
+JWT_SECRET
+INITIAL_PASSWORD
+DATA_DIR=/app/data
+PORT=20128
+HOSTNAME=0.0.0.0
+NODE_ENV=production
+BASE_URL
+CLOUD_URL=https://9router.com
+NEXT_PUBLIC_BASE_URL
+NEXT_PUBLIC_CLOUD_URL=https://9router.com
+API_KEY_SECRET
+MACHINE_ID_SALT
+ENABLE_REQUEST_LOGS=false
+AUTH_COOKIE_SECURE=false
+REQUIRE_API_KEY=false
+~~~
 
-```text
-/opt/9router
-/var/lib/9router
-```
+## Tunnel
 
-Node.js، npm، PM2 و Git حذف نمی‌شوند و هیچ تغییری در Firewall انجام نمی‌شود.
+منو این امکانات را دارد:
 
-## دستورات کاربردی
+~~~text
+Tunnel status
+Enable Tunnel
+Disable Tunnel
+Refresh Tunnel URL
+~~~
 
-```bash
-pm2 status
-pm2 logs 9router
-pm2 restart 9router
-```
+اسکریپت برای ارتباط با API داخلی Tunnel از CLI Token محلی 9Router استفاده می‌کند و خود Token را نمایش نمی‌دهد.
 
-## مسیر فایل‌ها
+وقتی Tunnel فعال شود، وضعیت آن در 9Router ذخیره می‌شود و Startup پروژه اصلی می‌تواند پس از Restart کانتینر Tunnel را دوباره Resume کند.
 
-```text
-/opt/9router/.env
-/opt/9router/        # سورس برنامه
-/var/lib/9router/    # داده‌های دائمی برنامه
-```
+Refresh یعنی Tunnel غیرفعال و دوباره فعال می‌شود و ممکن است URL عمومی جدیدی ایجاد شود.
 
-سطح دسترسی فایل `.env` روی 600 تنظیم می‌شود.
+## آپدیت خودکار
+
+یک systemd timer با نام 9router-update.timer ساخته می‌شود.
+
+این Timer تقریباً هر روز ساعت 04:30 با یک تأخیر تصادفی کوتاه Image decolua/9router:latest را بررسی می‌کند.
+
+کانتینر فقط در صورت وجود Image جدید یا نبودن/متوقف بودن کانتینر Recreate می‌شود. Data و .env حفظ می‌شوند.
+
+بررسی Timer:
+
+~~~bash
+systemctl status 9router-update.timer
+~~~
+
+آپدیت دستی:
+
+~~~bash
+bash <(curl -fsSL https://github.com/xpersian/9router-installer/archive/refs/heads/main.tar.gz | tar -xzO --wildcards '*/9router.sh') update
+~~~
+
+## نصب‌های قبلی
+
+فایل /opt/9router/.env موجود حفظ می‌شود.
+
+اگر Data قبلی در /var/lib/9router وجود داشته باشد و /opt/9router/data خالی باشد، installer آن را به مسیر Data جدید Docker کپی می‌کند.
+
+کانتینر قبلی با نام 9router با Image منتشرشده جایگزین می‌شود و Data روی Host حفظ می‌شود.
 
 ## Firewall
 
-installer هیچ قانون Firewall را باز یا تغییر نمی‌دهد.
+هیچ Rule یا پورتی باز یا تغییر داده نمی‌شود.
 
-اگر یکی از ابزارهای رایج Firewall مثل UFW، firewalld یا nftables روی سرور نصب باشد، فقط هشدار نمایش داده می‌شود. اگر مرورگر به 9Router دسترسی ندارد، قوانین Firewall را جداگانه بررسی کنید.
+اگر UFW، firewalld یا nftables نصب باشد، فقط هشدار نمایش داده می‌شود.
 
-## توضیح
+ممکن است Firewall یا Security Group جداگانه در پنل VPS روی TCP پورت 20128 محدودیت ایجاد کند.
 
-این repository یک installer مستقل برای 9Router است و خود پروژه 9Router توسط توسعه‌دهندگان upstream نگهداری می‌شود.
+## حذف کامل
+
+~~~bash
+bash <(curl -fsSL https://github.com/xpersian/9router-installer/archive/refs/heads/main.tar.gz | tar -xzO --wildcards '*/9router.sh') uninstall
+~~~
+
+برای تأیید باید REMOVE را وارد کنید.
+
+موارد زیر حذف می‌شوند:
+
+~~~text
+/opt/9router
+9router-update.timer
+9router-update.service
+/usr/local/sbin/9router-update
+~~~
+
+خود Docker حذف نمی‌شود.
+
+## دستورات کاربردی
+
+~~~bash
+docker ps
+docker logs -f 9router
+docker restart 9router
+systemctl status 9router-update.timer
+~~~
+
+## پروژه اصلی
+
+9Router:
+https://github.com/decolua/9router
+
+Docker Image:
+https://hub.docker.com/r/decolua/9router
+
+این repository یک installer مستقل برای پروژه اصلی است.
