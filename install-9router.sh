@@ -342,8 +342,8 @@ show_result() {
   echo "========================================"
   echo "9router installed/updated successfully"
   echo "========================================"
-  echo "Dashboard: \${url:-http://SERVER_IP:$PORT}/dashboard"
-  echo "API:       \${url:-http://SERVER_IP:$PORT}/v1"
+  echo "Dashboard: ${url:-http://SERVER_IP:$PORT}/dashboard"
+  echo "API:       ${url:-http://SERVER_IP:$PORT}/v1"
   echo "$PASSWORD_STATUS"
   echo
   echo "Status: pm2 status"
@@ -385,24 +385,97 @@ uninstall() {
   echo "Node.js, npm, PM2, Git and other shared dependencies were left installed."
 }
 
-case "\${1:-install}" in
+
+run_install() {
+  install_deps
+  mkdir -p "$APP_DIR"
+  create_or_update_env
+  install_app
+  check_firewall
+  verify_service || true
+  show_result
+}
+
+show_status() {
+  echo
+  echo "=== 9router status ==="
+  pm2 status "$APP_NAME" 2>/dev/null || pm2 status
+  echo
+  echo "Listening ports:"
+  ss -lntp 2>/dev/null | grep ":$PORT " || echo "Nothing is listening on TCP $PORT."
+}
+
+show_logs() {
+  pm2 logs "$APP_NAME" --lines 100 --nostream
+}
+
+restart_router() {
+  pm2 restart "$APP_NAME"
+  pm2 save
+  echo "9router restarted."
+}
+
+menu() {
+  while true; do
+    echo
+    echo "========================================"
+    echo "           9router Installer"
+    echo "========================================"
+    echo "1) Install / Update 9Router"
+    echo "2) Status"
+    echo "3) Show logs"
+    echo "4) Restart 9Router"
+    echo "5) Uninstall 9Router"
+    echo "0) Exit"
+    echo "========================================"
+
+    local choice
+    read_tty "Select an option [0-5]: " choice
+
+    case "$choice" in
+      1)
+        run_install
+        ;;
+      2)
+        show_status
+        ;;
+      3)
+        show_logs
+        ;;
+      4)
+        restart_router
+        ;;
+      5)
+        uninstall
+        ;;
+      0)
+        echo "Bye."
+        exit 0
+        ;;
+      *)
+        echo "Invalid option. Choose 0-5."
+        ;;
+    esac
+
+    echo
+    read_tty "Press Enter to return to the menu..." _
+  done
+}
+
+case "${1:-menu}" in
   install|update)
-    install_deps
-    mkdir -p "$APP_DIR"
-    create_or_update_env
-    install_app
-    check_firewall
-    verify_service || true
-    show_result
+    run_install
     ;;
   uninstall|remove|delete)
     uninstall
     ;;
+  menu)
+    menu
+    ;;
   *)
     echo "Usage:"
-    echo "  $0                  Install / update 9Router"
+    echo "  $0                  Open menu"
     echo "  $0 install          Install / update 9Router"
-    echo "  $0 uninstall       Remove 9Router and its data"
-    exit 1
+    echo "  $0 uninstall        Remove 9Router and its data"
     ;;
 esac
