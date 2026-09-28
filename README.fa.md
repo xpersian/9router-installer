@@ -1,189 +1,87 @@
-# نصب‌کننده Docker برای 9Router
+# نصب‌کننده npm برای 9Router
 
-فارسی | [English](README.md)
+[English](README.md) | فارسی
 
-اسکریپت نصب و مدیریت یک‌خطی برای اجرای [9Router](https://github.com/decolua/9router) با Docker روی Debian و Ubuntu.
+اسکریپت نصب و آپدیت یک‌خطی برای [9Router](https://github.com/decolua/9router) از سورس روی Ubuntu/Debian.
 
 ## امکانات
 
-- نصب خودکار Docker در صورت نصب نبودن
-- استفاده از image پروژه: `decolua/9router:latest`
-- اجرای 9Router روی پورت `20128`
-- نگهداری دائمی داده‌ها در `/opt/9router/data`
-- ساخت خودکار secretهای تصادفی و رمز اولیه
-- اجرای خودکار 9Router بعد از reboot سرور
-- بررسی خودکار آپدیت Docker image هر روز حوالی ساعت `04:30`
-- recreate کردن کانتینر فقط در صورت وجود image جدید
-- حفظ data و configuration هنگام آپدیت
-- مدیریت خودکار CLI Token موردنیاز مسیرهای محافظت‌شده Tunnel
-- نمایش وضعیت Tunnel و امکان فعال یا غیرفعال کردن آن از داخل اسکریپت
-- باز کردن TCP پورت `20128` در UFW فقط در صورتی که UFW از قبل فعال باشد
-- عدم دستکاری Apache، Nginx و پورت `443`
-- داشتن گزینه‌های نصب، Repair، Update، Status، Tunnel، Log، Restart و حذف کامل
+- نصب Node.js 22، Git، ابزارهای Build و PM2 در صورت نیاز
+- Clone و Update سورس رسمی 9Router
+- Build و اجرای مستقیم 9Router با npm و PM2
+- اجرای سرویس روی پورت 20128 و آدرس 0.0.0.0
+- ساخت خودکار Secretهای تصادفی برای JWT و API
+- انتخاب رمز Dashboard به‌صورت تعاملی با تأیید دوباره
+- سازگار با اجرای `curl ... | bash` چون ورودی‌های تعاملی را مستقیماً از `/dev/tty` می‌گیرد
+- پرسیدن اینکه دامنه می‌خواهید یا نه؛ در غیر این صورت IPv4 عمومی سرور را پیدا می‌کند
+- تعمیر نصب‌های قبلی که به‌اشتباه IPv6 را در URL ذخیره کرده‌اند
+- حفظ `.env` و داده‌های قبلی هنگام آپدیت
+- باز کردن TCP پورت 20128 در UFW فقط اگر UFW از قبل فعال باشد
+- بررسی اینکه 9Router روی پورت موردنظر Listen است و Dashboard محلی پاسخ می‌دهد
+- ساخت Swap موقت هنگام Build اگر مجموع Swap کمتر از 2 گیگابایت باشد
 
-## نصب سریع
+## نصب یا آپدیت
 
-دستور زیر را با کاربر `root` اجرا کنید:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/xpersian/9router-installer/main/install-9router.sh | bash
-```
-
-بعد از اجرا، منوی مدیریت نمایش داده می‌شود.
-
-برای نصب یا Repair مستقیم بدون ورود به منو:
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/xpersian/9router-installer/main/install-9router.sh) install
-```
-
-## منوی مدیریت
-
-هر زمان برای باز کردن منو کافی است دوباره این دستور را اجرا کنید:
+به‌عنوان root اجرا کنید:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/xpersian/9router-installer/main/install-9router.sh | bash
 ```
 
-گزینه‌های موجود:
+در اولین اجرا اسکریپت از شما دامنه و رمز Dashboard را می‌پرسد.
+
+اگر دامنه ندارید:
 
 ```text
-1) Install / Repair 9Router
-2) Update now
-3) Status
-4) Tunnel status
-5) Enable Tunnel
-6) Disable Tunnel
-7) Show logs
-8) Restart 9Router
-9) Uninstall completely
-0) Exit
+http://SERVER_IPV4:20128
 ```
 
-### نصب / Repair
-
-وابستگی‌های لازم را بررسی و در صورت نیاز نصب می‌کند، اگر configuration قبلی وجود نداشته باشد آن را می‌سازد، آخرین image را دریافت می‌کند و کانتینر `9router` را با حفظ داده‌های `/opt/9router/data` اجرا یا بازسازی می‌کند.
-
-### آپدیت فوری
-
-آخرین نسخه `decolua/9router:latest` را دریافت می‌کند. فقط اگر image جدید باشد کانتینر recreate می‌شود.
-
-### وضعیت
-
-وضعیت کانتینر Docker را نمایش می‌دهد و health endpoint محلی 9Router را بررسی می‌کند.
-
-## Tunnel
-
-اسکریپت برای Tunnel سه قابلیت دارد:
-
-- مشاهده وضعیت Tunnel
-- فعال کردن Tunnel
-- غیرفعال کردن Tunnel
-
-بعضی مسیرهای Tunnel در 9Router ممکن است به CLI Token محلی نیاز داشته باشند. اسکریپت این Token را از اطلاعات محلی نصب 9Router محاسبه کرده و درخواست را مستقیماً به API محلی ارسال می‌کند؛ بنابراین قرار نیست Token را دستی در Dashboard کپی کنید.
-
-بعد از نصب نیز اسکریپت از شما می‌پرسد که آیا می‌خواهید Tunnel را همان لحظه فعال کنید یا خیر.
-
-اگر فعال‌سازی Tunnel ناموفق بود، از گزینه‌های **Tunnel status** و **Show logs** برای بررسی استفاده کنید.
-
-## دسترسی به 9Router
-
-بعد از نصب:
+اگر دامنه وارد کنید:
 
 ```text
-http://IP-SERVER:20128
+http://DOMAIN:20128
 ```
 
-آدرس پایه API سازگار با OpenAI:
+این installer خودش HTTPS، Nginx، Apache یا Reverse Proxy را تنظیم نمی‌کند.
+
+برای آپدیت 9Router کافی است همان دستور را دوباره اجرا کنید. فایل `.env` و داده‌های برنامه حفظ می‌شوند.
+
+## Dashboard
+
+آدرس:
 
 ```text
-http://IP-SERVER:20128/v1
+http://SERVER_IPV4:20128/dashboard
 ```
 
-رمز اولیه‌ای که به‌صورت خودکار ساخته می‌شود در پایان نصب نمایش داده خواهد شد. آن را در جای امن نگه دارید و در صورت پشتیبانی نسخه نصب‌شده، از داخل Dashboard تغییر دهید.
+یا آدرس دامنه‌ای که هنگام نصب تنظیم کرده‌اید.
 
-## آپدیت خودکار
+رمز ورود، همان رمزی است که در اولین نصب انتخاب کرده‌اید. اگر نصب قدیمی دارای `INITIAL_PASSWORD` خالی باشد، اسکریپت دوباره از شما رمز می‌گیرد.
 
-یک systemd timer هر روز حوالی ساعت `04:30` وجود نسخه جدید را بررسی می‌کند. برای جلوگیری از اجرای هم‌زمان روی تعداد زیادی سرور، تا ۱۰ دقیقه تأخیر تصادفی نیز دارد.
-
-بررسی وضعیت timer:
+## دستورات کاربردی
 
 ```bash
-systemctl status 9router-update.timer
+pm2 status
+pm2 logs 9router
+pm2 restart 9router
 ```
 
-مشاهده لاگ سرویس آپدیت:
-
-```bash
-journalctl -u 9router-update.service
-```
-
-یا:
-
-```bash
-cat /opt/9router/update.log
-```
-
-اجرای مستقیم updater:
-
-```bash
-/opt/9router/update.sh
-```
-
-همچنین از داخل منو می‌توانید گزینه **Update now** را انتخاب کنید.
-
-## فایل‌ها
+## مسیر فایل‌ها
 
 ```text
-/opt/9router/
-├── .env
-├── data/
-├── update.sh
-└── update.log
+/opt/9router/.env
+/opt/9router/        # سورس برنامه
+/var/lib/9router/    # داده‌های دائمی برنامه
 ```
 
-فایل `.env` با سطح دسترسی محدود `600` ساخته می‌شود و داده‌های دائمی 9Router خارج از کانتینر نگهداری می‌شوند.
+سطح دسترسی فایل `.env` روی 600 تنظیم می‌شود.
 
-## لاگ و Restart
+## Firewall
 
-از داخل منوی مدیریت می‌توانید Logها را ببینید یا سرویس را Restart کنید.
+اگر UFW فعال باشد، installer پورت TCP شماره 20128 را باز می‌کند.
 
-دستورهای دستی:
-
-```bash
-docker logs -f 9router
-docker restart 9router
-```
-
-## حذف کامل
-
-از منو گزینه زیر را انتخاب کنید:
-
-```text
-9) Uninstall completely
-```
-
-اسکریپت قبل از حذف از شما تأیید می‌گیرد و سپس موارد زیر را حذف می‌کند:
-
-- کانتینر Docker با نام `9router`
-- Docker image مربوط به 9Router
-- systemd service و timer مربوط به آپدیت خودکار
-- مسیر `/opt/9router` شامل data و configuration دائمی
-
-خود Docker از روی سرور حذف نمی‌شود.
-
-> ⚠️ هشدار: حذف کامل باعث پاک شدن دائمی اطلاعات محلی 9Router می‌شود.
-
-## پورت 443 و سرویس‌های موجود
-
-این installer عمداً از TCP پورت `443` استفاده یا آن را تغییر نمی‌دهد. بنابراین سرویس‌های فعلی مانند Apache، Nginx یا سایر سرویس‌های HTTPS دست‌نخورده باقی می‌مانند.
-
-## امنیت
-
-طبق تنظیمات installer، پورت `20128` توسط Docker منتشر می‌شود. اگر سرور از اینترنت عمومی قابل دسترسی است، در صورت نیاز دسترسی این پورت را با firewall یا security group محدود کنید و احراز هویت 9Router را فعال نگه دارید.
-
-اتوماسیون Tunnel فقط CLI Token محلی را برای درخواست‌هایی که از خود سرور به API محلی 9Router ارسال می‌شوند استفاده می‌کند. `cli-secret` یا Token را در اختیار دیگران قرار ندهید.
+ممکن است VPS شما یک Firewall یا Security Group جداگانه در پنل سرویس‌دهنده داشته باشد؛ در آن صورت برای دسترسی مستقیم از مرورگر باید TCP 20128 را آنجا هم باز کنید.
 
 ## توضیح
 
-این repository یک installer و ابزار مدیریتی مستقل است و بخشی از پروژه اصلی 9Router محسوب نمی‌شود. خود [9Router](https://github.com/decolua/9router) و Docker image آن توسط توسعه‌دهندگان پروژه upstream نگهداری می‌شوند.
+این repository یک installer مستقل برای 9Router است و خود پروژه 9Router توسط توسعه‌دهندگان upstream نگهداری می‌شود.
