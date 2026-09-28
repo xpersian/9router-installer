@@ -66,9 +66,9 @@ configure_url() {
 
   if [[ "$has_domain" =~ ^[Yy]$ ]]; then
     read_tty "Enter your domain (example.com): " domain
-    domain="$domain#http://}"
-    domain="$domain#https://}"
-    domain="$domain%/}"
+    domain="${domain#http://}"
+    domain="${domain#https://}"
+    domain="${domain%/}"
     [ -n "$domain" ] || die "Domain cannot be empty."
 
     BASE_URL="http://$domain:$PORT"
@@ -131,8 +131,8 @@ repair_existing_env() {
     printf 'NEXT_PUBLIC_BASE_URL=%s\n' "$old_public_url" >> "$APP_DIR/.env"
   else
     host_part="$old_public_url"
-    host_part="$host_part#http://}"
-    host_part="$host_part#https://}"
+    host_part="${host_part#http://}"
+    host_part="${host_part#https://}"
 
     # Old versions of this installer could accidentally save an IPv6 URL.
     if [[ "$host_part" == *:*:* ]]; then
@@ -198,7 +198,7 @@ prepare_build_swap() {
   local total_swap
   total_swap=$(swapon --show=SIZE --noheadings --bytes 2>/dev/null | awk '{s+=$1} END {print s+0}')
 
-  if [ "$total_swap:-0}" -lt 2147483648 ]; then
+  if [ "${total_swap:-0}" -lt 2147483648 ]; then
     echo "Less than 2 GiB swap detected. Creating temporary 2 GiB build swap..."
 
     if [ ! -e "$BUILD_SWAP" ]; then
