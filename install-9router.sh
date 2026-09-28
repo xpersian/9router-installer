@@ -1,372 +1,69 @@
-#!/usr/bin/env bash
-set -Eeuo pipefail
+#!/bin/bash
+set -e
 
-APP_DIR=/opt/9router
-DATA_DIR="$APP_DIR/data"
-ENV_FILE="$APP_DIR/.env"
-CONTAINER_NAME=9router
-IMAGE=decolua/9router:latest
-PORT=20128
-UPDATE_SCRIPT="$APP_DIR/update.sh"
-UPDATE_SERVICE=/etc/systemd/system/9router-update.service
-UPDATE_TIMER=/etc/systemd/system/9router-update.timer
-
-log(){ echo "[+] $*"; }
-warn(){ echo "[!] $*"; }
-fail(){ echo "[ERROR] $*" >&2; return 1; }
-need_root(){ [[ $EUID -eq 0 ]] || fail "Run as root."; }
-
-# Always use the real terminal for interactive prompts, even with curl | bash.
-if [[ -r /dev/tty && -w /dev/tty ]]; then
-  exec 3</dev/tty 4>/dev/tty
-fi
-
-ask(){
-  local p="$1"
-  [[ -e /dev/fd/3 ]] || return 1
-  printf '%s' "$p" >&4
-  IFS= read -r REPLY <&3 || REPLY=""
-  return 0
-}
+APP_DIR="/opt/9router"
+DATA_DIR="/var/lib/9router"
+APP_NAME="9router"
+PORT="20128"
+REPO="https://github.com/decolua/9router.git"
 
 install_deps(){
-  apt-get update -qq
-  apt-get install -y -qq ca-certificates curl openssl >/dev/null
+ apt update
+ apt install -y git curl build-essential openssl
+ if ! command -v node >/dev/null 2>&1; then
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  apt install -y nodejs
+ fi
+ if ! command -v pm2 >/dev/null 2>&1; then
+  npm install -g pm2
+ fi
 }
 
-ensure_docker(){
-  command -v docker >/dev/null 2>&1 || { curl -fsSL https://get.docker.com | sh; }
-  systemctl enable --now docker
-}
-
-generate_password(){ openssl rand -hex 12; }
-
-write_env(){
-  mkdir -p "$DATA_DIR/auth"
-  chmod 700 "$APP_DIR" "$DATA_DIR" "$DATA_DIR/auth"
-
-  [[ -s "$DATA_DIR/machine-id" ]] || openssl rand -hex 32 > "$DATA_DIR/machine-id"
-  [[ -s "$DATA_DIR/auth/cli-secret" ]] || openssl rand -hex 32 > "$DATA_DIR/auth/cli-secret"
-  chmod 600 "$DATA_DIR/machine-id" "$DATA_DIR/auth/cli-secret"
-
-  if [[ -f "$ENV_FILE" ]]; then
-    grep -q '^INITIAL_PASSWORD=' "$ENV_FILE" || {
-      local p
-      p=$(generate_password)
-      printf '\nINITIAL_PASSWORD=%s\n' "$p" >> "$ENV_FILE"
-    }
-    # Existing installations are upgraded to request logging.
-    if grep -q '^ENABLE_REQUEST_LOGS=' "$ENV_FILE"; then
-      sed -i 's/^ENABLE_REQUEST_LOGS=.*/ENABLE_REQUEST_LOGS=true/' "$ENV_FILE"
-    else
-      printf '\nENABLE_REQUEST_LOGS=true\n' >> "$ENV_FILE"
-    fi
-    chmod 600 "$ENV_FILE"
-    return 0
-  fi
-
-  local password=""
-  echo >&4
-  if ask "Dashboard password (leave empty = secure random 24 chars): "; then
-    password="${REPLY:-}"
-  fi
-  [[ -n "$password" ]] || password=$(generate_password)
-
-  (( ${#password} >= 8 )) || fail "Password must be at least 8 characters."
-
-  cat > "$ENV_FILE" <<EOF
-NODE_ENV=production
+create_env(){
+ mkdir -p "$DATA_DIR"
+ if [ ! -f "$APP_DIR/.env" ]; then
+  echo "Creating environment file"
+  read -p "Dashboard password: " INITIAL_PASSWORD
+  cat > "$APP_DIR/.env" <<EOF
+JWT_SECRET=$(openssl rand -hex 32)
+INITIAL_PASSWORD=$INITIAL_PASSWORD
+DATA_DIR=$DATA_DIR
 PORT=$PORT
 HOSTNAME=0.0.0.0
-DATA_DIR=/app/data
-JWT_SECRET=$(openssl rand -hex 32)
-INITIAL_PASSWORD=$password
+NODE_ENV=production
+NEXT_PUBLIC_BASE_URL=http://$(curl -s ifconfig.me):$PORT
+NEXT_PUBLIC_CLOUD_URL=https://9router.com
 API_KEY_SECRET=$(openssl rand -hex 32)
 MACHINE_ID_SALT=$(openssl rand -hex 32)
-NEXT_PUBLIC_BASE_URL=http://127.0.0.1:$PORT
-NEXT_PUBLIC_CLOUD_URL=https://9router.com
-ENABLE_REQUEST_LOGS=true
 EOF
-  chmod 600 "$ENV_FILE"
+  chmod 600 "$APP_DIR/.env"
+ fi
 }
 
-get_password(){
-  [[ -f "$ENV_FILE" ]] && sed -n 's/^INITIAL_PASSWORD=//p' "$ENV_FILE" | head -n1 || true
-}
-
-container_exists(){ docker inspect "$CONTAINER_NAME" >/dev/null 2>&1; }
-container_running(){ [[ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || true)" == "true" ]]; }
-
-require_installed(){
-  container_exists || { warn "9Router is not installed. Install it first with option 1."; return 1; }
-  container_running || { warn "9Router is installed but not running. Use option 7 to restart it."; return 1; }
-}
-
-run_container(){
-  docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-
-  # Do NOT use --cap-drop ALL or no-new-privileges here.
-  # 9Router's entrypoint uses su-exec and requires setgroups().
-  docker run -d \
-    --name "$CONTAINER_NAME" \
-    --restart unless-stopped \
-    -p "$PORT:$PORT" \
-    --env-file "$ENV_FILE" \
-    -v "$DATA_DIR:/app/data" \
-    "$IMAGE" >/dev/null
-
-  for _ in {1..20}; do
-    container_running && break
-    sleep 1
-  done
-
-  if ! container_running; then
-    warn "9Router failed to start. Recent logs:"
-    docker logs --tail 80 "$CONTAINER_NAME" 2>&1 || true
-    fail "9Router failed to start."
-  fi
-}
-
-write_update(){
-  cat > "$UPDATE_SCRIPT" <<'EOF'
-#!/usr/bin/env bash
-set -Eeuo pipefail
-D=/opt/9router
-C=9router
-I=decolua/9router:latest
-
-docker pull "$I" >/dev/null
-L=$(docker image inspect "$I" -f '{{.Id}}')
-O=$(docker inspect "$C" -f '{{.Image}}' 2>/dev/null || true)
-[ "$L" = "$O" ] && exit 0
-
-docker rm -f "$C" 2>/dev/null || true
-# Keep the same security model as the installer: no restrictive cap-drop/no-new-privileges.
-docker run -d \
-  --name "$C" \
-  --restart unless-stopped \
-  -p 20128:20128 \
-  --env-file "$D/.env" \
-  -v "$D/data:/app/data" \
-  "$I" >/dev/null
-EOF
-
-  chmod 700 "$UPDATE_SCRIPT"
-
-  cat > "$UPDATE_SERVICE" <<EOF
-[Unit]
-After=docker.service
-Requires=docker.service
-
-[Service]
-Type=oneshot
-ExecStart=$UPDATE_SCRIPT
-EOF
-
-  cat > "$UPDATE_TIMER" <<EOF
-[Unit]
-
-[Timer]
-OnCalendar=*-*-* 04:30:00
-Persistent=true
-RandomizedDelaySec=10m
-
-[Install]
-WantedBy=timers.target
-EOF
-
-  systemctl daemon-reload
-  systemctl enable --now 9router-update.timer
-}
-
-cli_token(){
-  docker exec "$CONTAINER_NAME" node -e 'const fs=require("fs"),crypto=require("crypto");const r=p=>{try{return fs.readFileSync(p,"utf8").trim()}catch(e){return ""}};const i=r("/app/data/machine-id"),s=r("/app/data/auth/cli-secret");if(!i||!s)process.exit(2);process.stdout.write(crypto.createHash("sha256").update(i+"9r-cli-auth"+s).digest("hex").slice(0,16));' 2>/dev/null
-}
-
-api_json(){
-  local path="$1" t
-  t=$(cli_token || true)
-  [[ -n "$t" ]] || { warn "CLI token unavailable."; return 1; }
-  curl -fsS --max-time 15 -H "x-9r-cli-token: $t" "http://127.0.0.1:$PORT$path"
-}
-
-tunnel(){
-  local action="$1" t out
-  require_installed || return 1
-  t=$(cli_token || true)
-  [[ -n "$t" ]] || { warn "CLI token unavailable."; return 1; }
-  out=$(curl -sS --max-time 60 -X POST -H "x-9r-cli-token: $t" "http://127.0.0.1:$PORT/api/tunnel/$action" || true)
-  [[ -n "$out" ]] || { warn "Tunnel API request failed."; return 1; }
-  printf '%s\n' "$out"
-}
-
-print_tunnel_status(){
-  if ! require_installed >/dev/null 2>&1; then
-    echo "Tunnel      : NOT INSTALLED"
-    return 0
-  fi
-
-  local out
-  out=$(api_json "/api/tunnel/status" 2>/dev/null || true)
-  [[ -n "$out" ]] || { echo "Tunnel      : UNKNOWN"; return 0; }
-
-  printf '%s' "$out" | docker exec -i "$CONTAINER_NAME" node -e '
-let s="";
-process.stdin.on("data",d=>s+=d).on("end",()=>{
- try{
-  const x=JSON.parse(s),t=x.tunnel||x.data?.tunnel||x.data||x,ts=x.tailscale||x.data?.tailscale||{};
-  console.log("Tunnel      : "+(t.enabled===true?"ENABLED":t.enabled===false?"DISABLED":"UNKNOWN"));
-  if(t.running!==undefined) console.log("Running     : "+(t.running?"YES":"NO"));
-  if(t.publicUrl) console.log("Public URL  : "+t.publicUrl);
-  if(t.tunnelUrl) console.log("Tunnel URL  : "+t.tunnelUrl);
-  if(t.shortId) console.log("Short ID    : "+t.shortId);
-  if(t.error) console.log("Error       : "+t.error);
-  if(ts.enabled!==undefined) console.log("Tailscale   : "+(ts.enabled?"ENABLED":"DISABLED"));
- }catch(e){console.log("Tunnel      : UNKNOWN")}
-});
-' 2>/dev/null || echo "Tunnel      : UNKNOWN"
-}
-
-show_info(){
-  echo
-  echo "========== 9Router =========="
-  if ! container_exists; then
-    echo "Status      : NOT INSTALLED"
-    echo "Dashboard   : -"
-    echo "Password    : -"
-    echo "Tunnel      : NOT INSTALLED"
-    echo "=============================="
-    return 0
-  fi
-
-  docker ps --filter "name=^/$CONTAINER_NAME$" --format 'Container   : {{.Names}}\nStatus      : {{.Status}}\nImage       : {{.Image}}\nPorts       : {{.Ports}}'
-  local p
-  p=$(get_password)
-  [[ -n "$p" ]] && echo "Password    : $p" || echo "Password    : UNKNOWN"
-  echo "Dashboard   : http://$(hostname -I | awk '{print $1}'):$PORT"
-  print_tunnel_status
-  echo "=============================="
-}
-
-install_9router(){
-  install_deps
-  ensure_docker
-  mkdir -p "$APP_DIR"
-  write_env
-  docker pull "$IMAGE"
-  run_container
-  write_update
-
-  echo
-  echo "9Router installed successfully."
-  echo "Dashboard password: $(get_password)"
-
-  # Optional. Empty input/Enter means NO and never blocks installation.
-  if ask "Enable Tunnel now? [y/N]: "; then
-    case "${REPLY:-}" in
-      y|Y|yes|YES)
-        echo "Enabling Tunnel..."
-        if tunnel enable >/dev/null; then
-          sleep 2
-          echo "Tunnel enabled."
-        else
-          warn "Tunnel could not be enabled. Installation is still complete."
-        fi
-        ;;
-      *) echo "Tunnel skipped." ;;
-    esac
-  else
-    echo "Tunnel prompt unavailable; skipped."
-  fi
-
-  show_info
-}
-
-status(){ show_info; }
-
-tunnel_status(){
-  echo
-  echo "========== Tunnel status =========="
-  print_tunnel_status
-  echo "==================================="
-}
-
-change_tunnel(){
-  require_installed || return 0
-  echo
-  echo "========== Change Tunnel =========="
-  print_tunnel_status
-  echo
-  echo "1) Restart Tunnel (refresh URL)"
-  echo "2) Disable then Enable (refresh URL)"
-  echo "0) Back"
-  ask "Select: " || return 0
-  case "${REPLY:-}" in
-    1)
-      echo "Restarting Tunnel..."
-      if tunnel restart >/dev/null; then sleep 3; echo "Tunnel refreshed successfully."; else warn "Tunnel restart failed."; fi
-      print_tunnel_status
-      ;;
-    2)
-      echo "Disabling Tunnel..."
-      if tunnel disable >/dev/null; then sleep 2; else warn "Tunnel disable failed."; return 0; fi
-      echo "Enabling Tunnel..."
-      if tunnel enable >/dev/null; then sleep 3; echo "Tunnel refreshed successfully."; else warn "Tunnel enable failed."; return 0; fi
-      print_tunnel_status
-      ;;
-    0) return 0 ;;
-    *) warn "Invalid option." ;;
-  esac
-}
-
-uninstall(){
-  ask "Delete 9Router and ALL data? [y/N]: " || return
-  [[ "${REPLY:-}" =~ ^[Yy]$ ]] || return
-  systemctl disable --now 9router-update.timer 2>/dev/null || true
-  rm -f "$UPDATE_SERVICE" "$UPDATE_TIMER"
-  docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+install_app(){
+ if [ ! -d "$APP_DIR/.git" ]; then
   rm -rf "$APP_DIR"
-  systemctl daemon-reload
-  echo "Removed."
+  git clone "$REPO" "$APP_DIR"
+ else
+  cd "$APP_DIR"
+  git pull
+ fi
+
+ cd "$APP_DIR"
+ npm install
+ npm run build
+
+ pm2 delete "$APP_NAME" 2>/dev/null || true
+ pm2 start npm --name "$APP_NAME" -- start
+ pm2 save
+ pm2 startup systemd -u root --hp /root || true
 }
 
-menu(){
-  while :; do
-    cat >&4 <<'EOF'
+install_deps
+mkdir -p "$APP_DIR"
+create_env
+install_app
 
-========== 9router-installer ==========
-1) Install / Repair 9Router
-2) Update now
-3) Status
-4) Enable Tunnel
-5) Disable Tunnel
-6) Show logs
-7) Restart 9Router
-8) Uninstall completely
-9) Change / Refresh Tunnel URL
-0) Exit
-EOF
-
-    ask "Select: " || fail "No interactive terminal. Run: bash <(curl -fsSL https://raw.githubusercontent.com/xpersian/9router-installer/main/install-9router.sh)"
-    case "${REPLY:-}" in
-      1) install_9router ;;
-      2) if [[ -x "$UPDATE_SCRIPT" ]]; then "$UPDATE_SCRIPT"; show_info; else warn "9Router is not installed."; fi ;;
-      3) status ;;
-      4) if tunnel enable >/dev/null; then sleep 2; tunnel_status; fi ;;
-      5) if tunnel disable >/dev/null; then sleep 1; tunnel_status; fi ;;
-      6) if require_installed; then docker logs --tail 150 "$CONTAINER_NAME"; fi ;;
-      7) if require_installed; then docker restart "$CONTAINER_NAME"; sleep 3; show_info; fi ;;
-      8) uninstall ;;
-      9) change_tunnel ;;
-      0) exit 0 ;;
-      *) warn "Invalid option." ;;
-    esac
-  done
-}
-
-need_root
-case "${1:-menu}" in
-  install) install_9router ;;
-  menu) menu ;;
-  *) fail "Usage: $0 [install|menu]" ;;
-esac
+echo ""
+echo "9router installed/updated successfully"
+echo "URL: http://$(curl -s ifconfig.me):$PORT"
