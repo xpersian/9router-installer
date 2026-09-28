@@ -1,125 +1,217 @@
-# 9Router npm Installer
+# 9Router Docker Installer
 
 [فارسی](README.fa.md) | English
 
-One-command installer and updater for [9Router](https://github.com/decolua/9router) from source on Ubuntu/Debian.
+Fast VPS installer for 9Router using the published Docker image.
 
 ## Features
 
-- Installs Node.js 22, Git, build tools and PM2 when needed
-- Clones/updates the upstream 9Router source repository
-- Builds and runs 9Router directly with npm/PM2
-- Uses port 20128 and binds to 0.0.0.0
-- Creates secure random JWT/API secrets
-- Interactive dashboard password setup with confirmation
-- On the first setup, pressing Enter generates and displays a simple, reasonably strong password
-- On later runs, an existing dashboard password is preserved and never changed
-- Works correctly when launched with `curl ... | bash` by reading prompts from `/dev/tty`
-- Asks whether you want to use a domain; otherwise detects the server's public IPv4
-- Repairs older installations that accidentally saved an IPv6 public URL
-- Preserves the existing `.env` on updates
-- Detects common firewall tools and warns when a firewall is installed; it does not open or modify any firewall port
-- Verifies that 9Router is listening and that the local dashboard responds
-- Adds temporary build swap when the server has less than 2 GiB total swap
+- Uses the published multi-platform image: decolua/9router:latest
+- No Node.js build and no npm build on the VPS
+- Persistent data: /opt/9router/data
+- Automatic start after reboot with Docker restart policy
+- Service port: 20128
+- Uses IPv4 for the direct public URL when no domain is selected
+- First-run dashboard password prompt
+- Enter without a password to generate and display a reasonably strong password
+- Existing dashboard password is preserved on future runs
+- Cloudflare Quick Tunnel status, enable, disable and URL refresh from the menu
+- Tunnel-enabled state is persisted by 9Router and can auto-resume after restart
+- Daily automatic image update using systemd timer
+- Firewall detection only; no firewall rules are opened or modified
+- Complete uninstall option
 
-## Install or update
+## Install
 
 Run as root:
 
-```bash
+~~~bash
 curl -fsSL https://github.com/xpersian/9router-installer/archive/refs/heads/main.tar.gz | tar -xzO --wildcards '*/9router.sh' | bash
-```
+~~~
 
-The first run asks for a domain and dashboard password. The same command is also the update command.
+A numbered menu is shown.
 
-On the first setup, enter your own dashboard password or press Enter to generate one automatically. The generated password is displayed clearly and is preserved on every later update. When a password already exists, the script does not ask for a new one and does not change it.
+## Menu
 
-When no domain is selected, the script uses:
-
-```text
-http://SERVER_IPV4:20128
-```
-
-When a domain is selected, the direct URL is:
-
-```text
-http://DOMAIN:20128
-```
-
-This installer does not configure HTTPS, Nginx, Apache, or a reverse proxy.
-
-Run the same command again to update 9Router. The existing `.env` and application data are preserved.
-
-## Management menu
-
-Running the one-line command without arguments opens this menu:
-
-```text
+~~~text
 1) Install / Update 9Router
-2) Status
-3) Show logs
-4) Restart 9Router
-5) Uninstall 9Router
+2) Update now
+3) Status
+4) Tunnel status
+5) Enable Tunnel
+6) Disable Tunnel
+7) Refresh Tunnel URL
+8) Show logs
+9) Restart 9Router
+10) Uninstall 9Router
 0) Exit
-```
+~~~
 
-You can also use direct commands such as `install` or `uninstall` when needed.
+## First setup
 
-## Dashboard
+### URL
 
-Open:
+The installer asks whether you have a domain.
 
-```text
-http://SERVER_IPV4:20128/dashboard
-```
+Without a domain it detects the public IPv4 and uses:
 
-or the configured domain URL.
+~~~text
+http://SERVER_IPV4:20128
+~~~
 
-The dashboard password is the password chosen during the first setup. If an older installation has an empty `INITIAL_PASSWORD`, the installer asks for a new one (or generates one when you press Enter). Otherwise, the existing password is preserved unchanged.
+With a domain it uses:
 
-## Uninstall
+~~~text
+http://DOMAIN:20128
+~~~
 
-To completely remove 9Router and its persistent data:
+This installer does not configure HTTPS, Nginx, Apache or a reverse proxy.
 
-```bash
-curl -fsSL https://github.com/xpersian/9router-installer/archive/refs/heads/main.tar.gz | tar -xzO --wildcards '*/9router.sh' | bash -s -- uninstall
-```
+### Dashboard password
 
-The script asks for confirmation and requires typing `REMOVE`.
+On first setup:
 
-It removes:
+~~~text
+Dashboard password (Enter = auto-generate):
+~~~
 
-```text
-/opt/9router
-/var/lib/9router
-```
+Enter your own password, or press Enter.
 
-It does not remove Node.js, npm, PM2, Git, or change firewall rules.
+An automatically generated password looks similar to:
 
-## Useful commands
+~~~text
+9Router@03cb644633
+~~~
 
-```bash
-pm2 status
-pm2 logs 9router
-pm2 restart 9router
-```
+The exact generated password is printed and stored in /opt/9router/.env.
 
-## Files
+On later runs an existing password is preserved and is not regenerated.
 
-```text
-/opt/9router/.env
-/opt/9router/        # application source
-/var/lib/9router/    # persistent application data
-```
+## Docker
 
-The `.env` file is created with mode 600.
+The container is equivalent to:
+
+~~~bash
+docker run -d \
+  --name 9router \
+  --restart unless-stopped \
+  -p 0.0.0.0:20128:20128 \
+  --env-file /opt/9router/.env \
+  -v /opt/9router/data:/app/data \
+  decolua/9router:latest
+~~~
+
+The upstream image defines PORT=20128, HOSTNAME=0.0.0.0 and DATA_DIR=/app/data.
+
+## Environment
+
+The installer sets the main upstream deployment variables:
+
+~~~text
+JWT_SECRET
+INITIAL_PASSWORD
+DATA_DIR=/app/data
+PORT=20128
+HOSTNAME=0.0.0.0
+NODE_ENV=production
+BASE_URL
+CLOUD_URL=https://9router.com
+NEXT_PUBLIC_BASE_URL
+NEXT_PUBLIC_CLOUD_URL=https://9router.com
+API_KEY_SECRET
+MACHINE_ID_SALT
+ENABLE_REQUEST_LOGS=false
+AUTH_COOKIE_SECURE=false
+REQUIRE_API_KEY=false
+~~~
+
+## Tunnel
+
+The menu supports:
+
+~~~text
+Tunnel status
+Enable Tunnel
+Disable Tunnel
+Refresh Tunnel URL
+~~~
+
+The script uses the local 9Router CLI token to call the local Tunnel API. The token itself is not printed.
+
+Enabling the Tunnel stores the state in 9Router. The upstream startup code can automatically resume an enabled Tunnel after the container restarts.
+
+Refreshing the Tunnel disables it and enables it again, which may create a new public URL.
+
+## Automatic updates
+
+A systemd timer named 9router-update.timer is installed.
+
+It checks decolua/9router:latest every day around 04:30 with a small randomized delay.
+
+The container is recreated only when a new image is available or the container is missing/stopped. The data directory and .env are preserved.
+
+Check the timer:
+
+~~~bash
+systemctl status 9router-update.timer
+~~~
+
+Manual update:
+
+~~~bash
+bash <(curl -fsSL https://github.com/xpersian/9router-installer/archive/refs/heads/main.tar.gz | tar -xzO --wildcards '*/9router.sh') update
+~~~
+
+## Existing installations
+
+Existing configuration at /opt/9router/.env is preserved.
+
+If old application data exists at /var/lib/9router and /opt/9router/data is empty, the installer copies the old data into the new Docker data directory.
+
+An existing container named 9router is replaced with the published image while preserving the host data directory.
 
 ## Firewall
 
-The installer does not open or modify firewall rules.
+No firewall rule is opened or changed.
 
-If a common firewall tool is installed (UFW, firewalld, or nftables), the installer only reports a warning. If browser access is blocked, check the firewall rules yourself.
+If UFW, firewalld or nftables is installed, the installer only prints a warning.
 
-## Disclaimer
+A separate firewall or security group in the VPS provider panel can still affect TCP 20128.
 
-This repository is an independent installer/helper project. 9Router itself is maintained by the upstream project.
+## Uninstall
+
+~~~bash
+bash <(curl -fsSL https://github.com/xpersian/9router-installer/archive/refs/heads/main.tar.gz | tar -xzO --wildcards '*/9router.sh') uninstall
+~~~
+
+Type REMOVE to confirm.
+
+The following are removed:
+
+~~~text
+/opt/9router
+9router-update.timer
+9router-update.service
+/usr/local/sbin/9router-update
+~~~
+
+Docker itself is not removed.
+
+## Useful commands
+
+~~~bash
+docker ps
+docker logs -f 9router
+docker restart 9router
+systemctl status 9router-update.timer
+~~~
+
+## Upstream
+
+9Router:
+https://github.com/decolua/9router
+
+Docker image:
+https://hub.docker.com/r/decolua/9router
+
+This repository is an independent installer/helper.
