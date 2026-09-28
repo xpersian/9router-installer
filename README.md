@@ -50,6 +50,21 @@ This installer does not configure HTTPS, Nginx, Apache, or a reverse proxy.
 
 Run the same command again to update 9Router. The existing `.env` and application data are preserved.
 
+## Management menu
+
+Running the one-line command without arguments opens this menu:
+
+```text
+1) Install / Update 9Router
+2) Status
+3) Show logs
+4) Restart 9Router
+5) Uninstall 9Router
+0) Exit
+```
+
+You can also use direct commands such as `install` or `uninstall` when needed.
+
 ## Dashboard
 
 Open:
