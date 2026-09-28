@@ -50,6 +50,21 @@ http://DOMAIN:20128
 
 برای آپدیت 9Router کافی است همان دستور را دوباره اجرا کنید. فایل `.env` و داده‌های برنامه حفظ می‌شوند.
 
+## منوی مدیریت
+
+با اجرای دستور یک‌خطی بدون آرگومان، منوی زیر نمایش داده می‌شود:
+
+```text
+1) Install / Update 9Router
+2) Status
+3) Show logs
+4) Restart 9Router
+5) Uninstall 9Router
+0) Exit
+```
+
+در صورت نیاز می‌توان از دستورات مستقیم `install` یا `uninstall` نیز استفاده کرد.
+
 ## Dashboard
 
 آدرس:
