@@ -27,7 +27,7 @@ One-command installer and updater for [9Router](https://github.com/decolua/9rout
 Run as root:
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/xpersian/9router-installer/main/install-9router.sh?cb=$(date +%s)" | bash
+curl -fsSL https://github.com/xpersian/9router-installer/archive/refs/heads/main.tar.gz | tar -xzO --wildcards '*/9router.sh' | bash
 ```
 
 The first run asks for a domain and dashboard password. The same command is also the update command.
@@ -82,7 +82,7 @@ The dashboard password is the password chosen during the first setup. If an olde
 To completely remove 9Router and its persistent data:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/xpersian/9router-installer/main/install-9router.sh) uninstall
+curl -fsSL https://github.com/xpersian/9router-installer/archive/refs/heads/main.tar.gz | tar -xzO --wildcards '*/9router.sh' | bash -s -- uninstall
 ```
 
 The script asks for confirmation and requires typing `REMOVE`.
