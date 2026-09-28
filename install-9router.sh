@@ -220,16 +220,37 @@ cleanup_build_swap() {
   fi
 }
 
-install_app() {
-  if [ ! -d "$APP_DIR/.git" ]; then
-    rm -rf "$APP_DIR"
-    git clone "$REPO" "$APP_DIR"
-  else
+ensure_repo() {
+  if [ -d "$APP_DIR/.git" ]; then
     cd "$APP_DIR"
-    git pull --ff-only
+    git remote set-url origin "$REPO" 2>/dev/null || git remote add origin "$REPO"
+    git fetch --prune origin
+    git reset --hard origin/HEAD
+    return
   fi
 
+  if [ -d "$APP_DIR" ] && [ -n "$(find "$APP_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+    echo "Existing 9router directory found without Git metadata."
+    echo "Converting it in place instead of running git clone again..."
+    cd "$APP_DIR"
+
+    git init -q
+    git remote remove origin 2>/dev/null || true
+    git remote add origin "$REPO"
+    git fetch --prune origin
+
+    git reset --hard origin/HEAD
+    return
+  fi
+
+  rm -rf "$APP_DIR"
+  git clone "$REPO" "$APP_DIR"
+}
+
+install_app() {
+  ensure_repo
   cd "$APP_DIR"
+
   npm install
 
   prepare_build_swap
@@ -247,13 +268,13 @@ install_app() {
   pm2 startup systemd -u root --hp /root >/dev/null 2>&1 || true
 }
 
-open_firewall() {
-  if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
-    ufw allow "$PORT/tcp" comment '9Router' >/dev/null || true
-    echo "UFW: TCP $PORT allowed."
+check_firewall() {
+  if command -v ufw >/dev/null 2>&1 || command -v firewall-cmd >/dev/null 2>&1 || command -v nft >/dev/null 2>&1; then
+    echo
+    echo "WARNING: A firewall component appears to be installed on this server."
+    echo "The installer will NOT open or modify any firewall port."
   else
-    echo "UFW is not active; no local firewall rule was changed."
-    echo "If your VPS provider has a separate firewall/security group, allow TCP $PORT there too."
+    echo "No common firewall tool detected. No firewall changes were made."
   fi
 }
 
@@ -300,6 +321,6 @@ install_deps
 mkdir -p "$APP_DIR"
 create_or_update_env
 install_app
-open_firewall
+check_firewall
 verify_service || true
 show_result
