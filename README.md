@@ -16,7 +16,7 @@ One-command installer and updater for [9Router](https://github.com/decolua/9rout
 - Asks whether you want to use a domain; otherwise detects the server's public IPv4
 - Repairs older installations that accidentally saved an IPv6 public URL
 - Preserves the existing `.env` on updates
-- Opens TCP 20128 in UFW only when UFW is already active
+- Detects common firewall tools and warns when a firewall is installed; it does not open or modify any firewall port
 - Verifies that 9Router is listening and that the local dashboard responds
 - Adds temporary build swap when the server has less than 2 GiB total swap
 
@@ -78,9 +78,9 @@ The `.env` file is created with mode 600.
 
 ## Firewall
 
-If UFW is active, the installer allows TCP port 20128.
+The installer does not open or modify firewall rules.
 
-A VPS provider can also have a separate network firewall/security group. That external firewall must allow TCP 20128 for direct browser access.
+If a common firewall tool is installed (UFW, firewalld, or nftables), the installer only reports a warning. If browser access is blocked, check the firewall rules yourself.
 
 ## Disclaimer
 
