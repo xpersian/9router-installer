@@ -66,9 +66,9 @@ configure_url() {
 
   if [[ "$has_domain" =~ ^[Yy]$ ]]; then
     read_tty "Enter your domain (example.com): " domain
-    domain="\${domain#http://}"
-    domain="\${domain#https://}"
-    domain="\${domain%/}"
+    domain="${domain#http://}"
+    domain="${domain#https://}"
+    domain="${domain%/}"
     [ -n "$domain" ] || die "Domain cannot be empty."
 
     BASE_URL="http://$domain:$PORT"
@@ -100,7 +100,7 @@ prompt_password() {
       break
     fi
 
-    [ "\${#p1}" -ge 6 ] || { echo "Password must be at least 6 characters."; continue; }
+    [ "${#p1}" -ge 6 ] || { echo "Password must be at least 6 characters."; continue; }
     [[ "$p1" != *[[:space:]]* ]] || { echo "Password must not contain spaces or tabs."; continue; }
 
     read_secret_tty "Confirm dashboard password: " p2
@@ -143,8 +143,8 @@ repair_existing_env() {
     printf 'NEXT_PUBLIC_BASE_URL=%s\n' "$old_public_url" >> "$APP_DIR/.env"
   else
     host_part="$old_public_url"
-    host_part="\${host_part#http://}"
-    host_part="\${host_part#https://}"
+    host_part="${host_part#http://}"
+    host_part="${host_part#https://}"
 
     if [[ "$host_part" == *:*:* ]]; then
       server_ip=$(detect_ipv4)
@@ -219,7 +219,7 @@ prepare_build_swap() {
   local total_swap
   total_swap=$(swapon --show=SIZE --noheadings --bytes 2>/dev/null | awk '{s+=$1} END {print s+0}')
 
-  if [ "\${total_swap:-0}" -lt 2147483648 ]; then
+  if [ "${total_swap:-0}" -lt 2147483648 ]; then
     echo "Less than 2 GiB swap detected. Creating temporary 2 GiB build swap..."
 
     if [ ! -e "$BUILD_SWAP" ]; then
@@ -288,7 +288,7 @@ install_app() {
   prepare_build_swap
   trap cleanup_build_swap EXIT
 
-  npm install
+  npm install --no-audit --no-fund --prefer-offline
 
   echo "Building 9router..."
   MAKEFLAGS="-j1" NODE_OPTIONS="--max-old-space-size=768" npm run build
@@ -297,7 +297,7 @@ install_app() {
   trap - EXIT
 
   pm2 delete "$APP_NAME" 2>/dev/null || true
-  pm2 start npm --name "$APP_NAME" -- start
+  pm2 start custom-server.js --name "$APP_NAME" -- --port "$PORT"
   pm2 save
   pm2 startup systemd -u root --hp /root >/dev/null 2>&1 || true
 }
