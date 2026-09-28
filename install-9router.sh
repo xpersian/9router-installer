@@ -21,9 +21,27 @@ install_deps(){
 
 create_env(){
  mkdir -p "$DATA_DIR"
+
  if [ ! -f "$APP_DIR/.env" ]; then
-  echo "Creating environment file"
+
+  echo "=== 9router URL Configuration ==="
+  read -p "Do you have a domain? (y/n): " HAS_DOMAIN
+
+  if [[ "$HAS_DOMAIN" =~ ^[Yy]$ ]]; then
+      read -p "Enter your domain (example.com): " DOMAIN
+      BASE_URL="https://$DOMAIN"
+  else
+      SERVER_IP=$(curl -4 -s https://api.ipify.org)
+      if [ -z "$SERVER_IP" ]; then
+          echo "Cannot detect IPv4 address"
+          exit 1
+      fi
+      BASE_URL="http://$SERVER_IP:$PORT"
+  fi
+
+  echo "Using Base URL: $BASE_URL"
   read -p "Dashboard password: " INITIAL_PASSWORD
+
   cat > "$APP_DIR/.env" <<EOF
 JWT_SECRET=$(openssl rand -hex 32)
 INITIAL_PASSWORD=$INITIAL_PASSWORD
@@ -31,12 +49,15 @@ DATA_DIR=$DATA_DIR
 PORT=$PORT
 HOSTNAME=0.0.0.0
 NODE_ENV=production
-NEXT_PUBLIC_BASE_URL=http://$(curl -s ifconfig.me):$PORT
+NEXT_PUBLIC_BASE_URL=$BASE_URL
 NEXT_PUBLIC_CLOUD_URL=https://9router.com
 API_KEY_SECRET=$(openssl rand -hex 32)
 MACHINE_ID_SALT=$(openssl rand -hex 32)
 EOF
+
   chmod 600 "$APP_DIR/.env"
+ else
+  echo ".env exists - keeping current configuration"
  fi
 }
 
@@ -66,4 +87,3 @@ install_app
 
 echo ""
 echo "9router installed/updated successfully"
-echo "URL: http://$(curl -s ifconfig.me):$PORT"
