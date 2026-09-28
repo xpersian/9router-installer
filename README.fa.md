@@ -27,7 +27,7 @@
 به‌عنوان root اجرا کنید:
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/xpersian/9router-installer/main/install-9router.sh?cb=$(date +%s)" | bash
+curl -fsSL https://github.com/xpersian/9router-installer/archive/refs/heads/main.tar.gz | tar -xzO --wildcards '*/9router.sh' | bash
 ```
 
 در اولین اجرا اسکریپت از شما دامنه و رمز Dashboard را می‌پرسد. همین دستور برای آپدیت‌های بعدی نیز استفاده می‌شود.
@@ -82,7 +82,7 @@ http://SERVER_IPV4:20128/dashboard
 برای حذف کامل 9Router و داده‌های دائمی آن:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/xpersian/9router-installer/main/install-9router.sh) uninstall
+curl -fsSL https://github.com/xpersian/9router-installer/archive/refs/heads/main.tar.gz | tar -xzO --wildcards '*/9router.sh' | bash -s -- uninstall
 ```
 
 اسکریپت برای تأیید از شما می‌خواهد دقیقاً `REMOVE` را وارد کنید.
