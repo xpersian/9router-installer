@@ -91,7 +91,7 @@ prompt_password() {
     read_secret_tty "Choose dashboard password: " p1
 
     [ -n "$p1" ] || { echo "Password cannot be empty."; continue; }
-    [ "$#p1}" -ge 6 ] || { echo "Password must be at least 6 characters."; continue; }
+    [ "${#p1}" -ge 6 ] || { echo "Password must be at least 6 characters."; continue; }
 
     read_secret_tty "Confirm dashboard password: " p2
 
@@ -308,8 +308,8 @@ show_result() {
   echo "========================================"
   echo "9router installed/updated successfully"
   echo "========================================"
-  echo "Dashboard: $url:-http://SERVER_IP:$PORT}/dashboard"
-  echo "API:       $url:-http://SERVER_IP:$PORT}/v1"
+  echo "Dashboard: ${url:-http://SERVER_IP:$PORT}/dashboard"
+  echo "API:       ${url:-http://SERVER_IP:$PORT}/v1"
   echo
   echo "The dashboard password is the one you chose during setup."
   echo "Status: pm2 status"
