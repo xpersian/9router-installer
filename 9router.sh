@@ -1,187 +1,101 @@
 #!/bin/bash
 set -e
 
-APP_DIR="/opt/9router"
-DATA_DIR="/var/lib/9router"
 APP_NAME="9router"
+IMAGE="decolua/9router:latest"
 PORT="20128"
-REPO="https://github.com/decolua/9router.git"
+APP_DIR="/opt/9router"
+DATA_DIR="/opt/9router/data"
+ENV_FILE="/opt/9router/.env"
+UPDATE_WRAPPER="/usr/local/sbin/9router-update"
+SERVICE_FILE="/etc/systemd/system/9router-update.service"
+TIMER_FILE="/etc/systemd/system/9router-update.timer"
 
-die() {
-  echo "ERROR: $*" >&2
-  exit 1
-}
+die() { echo "ERROR: $*" >&2; exit 1; }
+require_root() { [ "$EUID" -eq 0 ] || die "Run as root."; }
 
 read_tty() {
-  local prompt="$1"
-  local __var="$2"
-  local value
-  [ -r /dev/tty ] || die "Interactive terminal (/dev/tty) is required for first-time setup."
+  local prompt="$1" out="$2" value
+  [ -r /dev/tty ] || die "Interactive terminal is required."
   read -r -p "$prompt" value </dev/tty
-  printf -v "$__var" '%s' "$value"
+  printf -v "$out" '%s' "$value"
 }
 
 read_secret_tty() {
-  local prompt="$1"
-  local __var="$2"
-  local value
-  [ -r /dev/tty ] || die "Interactive terminal (/dev/tty) is required for password setup."
+  local prompt="$1" out="$2" value
+  [ -r /dev/tty ] || die "Interactive terminal is required for password input."
   read -r -s -p "$prompt" value </dev/tty
   echo
-  printf -v "$__var" '%s' "$value"
+  printf -v "$out" '%s' "$value"
 }
 
-install_deps() {
-  apt update
-  apt install -y git curl build-essential openssl
-
-  if ! command -v node >/dev/null 2>&1; then
-    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-    apt install -y nodejs
+install_docker() {
+  if command -v docker >/dev/null 2>&1; then
+    systemctl enable --now docker >/dev/null 2>&1 || true
+    return
   fi
-
-  if ! command -v pm2 >/dev/null 2>&1; then
-    npm install -g pm2
-  fi
+  echo "Docker not found. Installing..."
+  apt-get update
+  apt-get install -y ca-certificates curl
+  curl -fsSL https://get.docker.com | sh
+  systemctl enable --now docker
 }
 
 detect_ipv4() {
   local ip
   ip=$(curl -4 -fsS --max-time 10 https://api.ipify.org || true)
-
-  if [[ ! "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+  if ! echo "$ip" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
     ip=$(curl -4 -fsS --max-time 10 https://ipv4.icanhazip.com | tr -d '[:space:]' || true)
   fi
-
-  [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || die "Could not detect the server IPv4 address."
+  echo "$ip" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' || die "Could not detect public IPv4."
   printf '%s' "$ip"
 }
 
 configure_url() {
-  local has_domain domain server_ip
-
+  local answer domain ip
   echo
-  echo "=== 9router URL configuration ==="
-  read_tty "Do you have a domain? (y/n): " has_domain
-
-  if [[ "$has_domain" =~ ^[Yy]$ ]]; then
-    read_tty "Enter your domain (example.com): " domain
-    domain="${domain#http://}"
-    domain="${domain#https://}"
-    domain="${domain%/}"
+  read_tty "Do you have a domain? (y/n): " answer
+  if [[ "$answer" =~ ^[Yy]$ ]]; then
+    read_tty "Enter domain (example.com): " domain
+    domain=$(printf '%s' "$domain" | sed -E 's#^https?://##; s#/$##')
     [ -n "$domain" ] || die "Domain cannot be empty."
-
     BASE_URL="http://$domain:$PORT"
-
-    echo "Direct URL: $BASE_URL"
-    echo "This installer does not configure TLS/reverse proxy."
   else
-    server_ip=$(detect_ipv4)
-    BASE_URL="http://$server_ip:$PORT"
-
-    echo "Detected IPv4: $server_ip"
-    echo "Direct URL: $BASE_URL"
+    ip=$(detect_ipv4)
+    BASE_URL="http://$ip:$PORT"
+    echo "Detected IPv4: $ip"
   fi
+  echo "Base URL: $BASE_URL"
 }
 
-prompt_password() {
+new_password() {
+  printf '9Router@%s' "$(openssl rand -hex 5)"
+}
+
+setup_password() {
   local p1 p2
-  PASSWORD_WAS_GENERATED="false"
-  PASSWORD_GENERATED_VALUE=""
-
-  while true; do
-    read_secret_tty "Choose dashboard password (press Enter for auto-generated password): " p1
-
-    if [ -z "$p1" ]; then
-      p1="9Router@$(openssl rand -hex 5)"
-      PASSWORD_WAS_GENERATED="true"
-      PASSWORD_GENERATED_VALUE="$p1"
-      echo "No password entered. Generated password: $p1"
-      break
-    fi
-
-    [ "${#p1}" -ge 6 ] || { echo "Password must be at least 6 characters."; continue; }
-    [[ "$p1" != *[[:space:]]* ]] || { echo "Password must not contain spaces or tabs."; continue; }
-
-    read_secret_tty "Confirm dashboard password: " p2
-
-    if [ "$p1" = "$p2" ]; then
-      break
-    fi
-
-    echo "Passwords do not match. Try again."
-  done
-
+  read_secret_tty "Dashboard password (Enter = auto-generate): " p1
+  if [ -z "$p1" ]; then
+    p1=$(new_password)
+    PASSWORD_GENERATED="$p1"
+    echo "Generated password: $p1"
+  else
+    [ "$(printf '%s' "$p1" | wc -c)" -ge 6 ] || die "Password must be at least 6 characters."
+    read_secret_tty "Confirm password: " p2
+    [ "$p1" = "$p2" ] || die "Passwords do not match."
+  fi
   INITIAL_PASSWORD="$p1"
 }
 
-repair_existing_env() {
-  local existing_password old_public_url host_part server_ip
-
-  existing_password=$(grep -E '^INITIAL_PASSWORD=' "$APP_DIR/.env" | head -n1 | cut -d= -f2- || true)
-
-  if [ -z "$existing_password" ]; then
-    echo
-    echo "No dashboard password is stored in the existing configuration."
-    prompt_password
-
-    sed -i '/^INITIAL_PASSWORD=/d' "$APP_DIR/.env"
-    printf 'INITIAL_PASSWORD=%s\n' "$INITIAL_PASSWORD" >> "$APP_DIR/.env"
-
-    if [ "$PASSWORD_WAS_GENERATED" = "true" ]; then
-      echo "Keep this password safe. It will be preserved on future updates."
-    fi
-  else
-    PASSWORD_STATUS="Existing dashboard password preserved."
-  fi
-
-  old_public_url=$(grep -E '^NEXT_PUBLIC_BASE_URL=' "$APP_DIR/.env" | head -n1 | cut -d= -f2- || true)
-
-  if [ -z "$old_public_url" ]; then
-    server_ip=$(detect_ipv4)
-    old_public_url="http://$server_ip:$PORT"
-    printf 'NEXT_PUBLIC_BASE_URL=%s\n' "$old_public_url" >> "$APP_DIR/.env"
-  else
-    host_part="$old_public_url"
-    host_part="${host_part#http://}"
-    host_part="${host_part#https://}"
-
-    if [[ "$host_part" == *:*:* ]]; then
-      server_ip=$(detect_ipv4)
-      old_public_url="http://$server_ip:$PORT"
-      sed -i '/^NEXT_PUBLIC_BASE_URL=/d' "$APP_DIR/.env"
-      printf 'NEXT_PUBLIC_BASE_URL=%s\n' "$old_public_url" >> "$APP_DIR/.env"
-      echo "Repaired invalid IPv6 public URL: $old_public_url"
-    fi
-  fi
-
-  if ! grep -q '^BASE_URL=' "$APP_DIR/.env"; then
-    printf 'BASE_URL=%s\n' "$old_public_url" >> "$APP_DIR/.env"
-  fi
-
-  if ! grep -q '^CLOUD_URL=' "$APP_DIR/.env"; then
-    printf 'CLOUD_URL=https://9router.com\n' >> "$APP_DIR/.env"
-  fi
-
-  if ! grep -q '^NEXT_PUBLIC_CLOUD_URL=' "$APP_DIR/.env"; then
-    printf 'NEXT_PUBLIC_CLOUD_URL=https://9router.com\n' >> "$APP_DIR/.env"
-  fi
-
-  chmod 600 "$APP_DIR/.env"
-}
-
-create_or_update_env() {
-  mkdir -p "$DATA_DIR"
-  PASSWORD_STATUS=""
-
-  if [ ! -f "$APP_DIR/.env" ]; then
+ensure_env() {
+  mkdir -p "$APP_DIR" "$DATA_DIR"
+  if [ ! -f "$ENV_FILE" ]; then
     configure_url
-    prompt_password
-
-    cat > "$APP_DIR/.env" <<EOF
+    setup_password
+    cat > "$ENV_FILE" <<EOF
 JWT_SECRET=$(openssl rand -hex 32)
 INITIAL_PASSWORD=$INITIAL_PASSWORD
-DATA_DIR=$DATA_DIR
+DATA_DIR=/app/data
 PORT=$PORT
 HOSTNAME=0.0.0.0
 NODE_ENV=production
@@ -195,266 +109,298 @@ ENABLE_REQUEST_LOGS=false
 AUTH_COOKIE_SECURE=false
 REQUIRE_API_KEY=false
 EOF
-
-    chmod 600 "$APP_DIR/.env"
-
-    if [ "$PASSWORD_WAS_GENERATED" = "true" ]; then
-      PASSWORD_STATUS="Generated dashboard password: $PASSWORD_GENERATED_VALUE"
-      echo
-      echo "IMPORTANT: Your generated dashboard password is:"
-      echo "$PASSWORD_GENERATED_VALUE"
+    chmod 600 "$ENV_FILE"
+    if [ -n "$PASSWORD_GENERATED" ]; then
+      echo "IMPORTANT: keep this dashboard password: $PASSWORD_GENERATED"
       echo "It will be preserved on future updates."
-    else
-      PASSWORD_STATUS="Dashboard password was set by you and will be preserved on future updates."
     fi
+    return
+  fi
+
+  if ! grep -q '^INITIAL_PASSWORD=' "$ENV_FILE" || [ -z "$(grep -E '^INITIAL_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)" ]; then
+    setup_password
+    sed -i '/^INITIAL_PASSWORD=/d' "$ENV_FILE"
+    printf 'INITIAL_PASSWORD=%s\n' "$INITIAL_PASSWORD" >> "$ENV_FILE"
+    echo "Dashboard password repaired and saved."
   else
-    repair_existing_env
+    echo "Existing dashboard password preserved."
   fi
+  chmod 600 "$ENV_FILE"
 }
 
-prepare_build_swap() {
-  BUILD_SWAP="/swapfile_9router_build"
-  BUILD_SWAP_CREATED="false"
+run_container() {
+  docker rm -f "$APP_NAME" >/dev/null 2>&1 || true
+  docker run -d \
+    --name "$APP_NAME" \
+    --restart unless-stopped \
+    -p "0.0.0.0:$PORT:$PORT" \
+    --env-file "$ENV_FILE" \
+    -v "$DATA_DIR:/app/data" \
+    "$IMAGE" >/dev/null
+  echo "9Router container started."
+}
 
-  local total_swap
-  total_swap=$(swapon --show=SIZE --noheadings --bytes 2>/dev/null | awk '{s+=$1} END {print s+0}')
+container_exists() {
+  docker container inspect "$APP_NAME" >/dev/null 2>&1
+}
 
-  if [ "${total_swap:-0}" -lt 2147483648 ]; then
-    echo "Less than 2 GiB swap detected. Creating temporary 2 GiB build swap..."
+container_running() {
+  [ "$(docker inspect -f '{{.State.Running}}' "$APP_NAME" 2>/dev/null || echo false)" = "true" ]
+}
 
-    if [ ! -e "$BUILD_SWAP" ]; then
-      fallocate -l 2G "$BUILD_SWAP"
-      chmod 600 "$BUILD_SWAP"
-      mkswap "$BUILD_SWAP" >/dev/null
+health_check() {
+  local n
+  for n in $(seq 1 60); do
+    if curl -fsS --max-time 2 "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
+      echo "Health check: OK"
+      return 0
     fi
-
-    swapon "$BUILD_SWAP"
-    BUILD_SWAP_CREATED="true"
-  fi
-}
-
-cleanup_build_swap() {
-  if [ "$BUILD_SWAP_CREATED" = "true" ] &&
-     swapon --show=NAME --noheadings 2>/dev/null | grep -qx "$BUILD_SWAP"; then
-    swapoff "$BUILD_SWAP" || true
-    rm -f "$BUILD_SWAP"
-  fi
-}
-
-ensure_repo() {
-  if [ -d "$APP_DIR/.git" ]; then
-    cd "$APP_DIR"
-    git remote set-url origin "$REPO" 2>/dev/null || git remote add origin "$REPO"
-    git fetch --prune origin
-
-    local default_branch
-    default_branch=$(git remote show origin 2>/dev/null | sed -n '/HEAD branch/s/.*: //p')
-    [ -n "$default_branch" ] || default_branch="main"
-
-    git reset --hard "origin/$default_branch"
-    return
-  fi
-
-  if [ -d "$APP_DIR" ] && [ -n "$(find "$APP_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
-    echo "Existing 9router directory found without Git metadata."
-    echo "Refreshing the source while preserving .env..."
-
-    local env_backup="/tmp/9router.env.backup"
-    rm -f "$env_backup"
-
-    if [ -f "$APP_DIR/.env" ]; then
-      cp -p "$APP_DIR/.env" "$env_backup"
-    fi
-
-    rm -rf "$APP_DIR"
-    git clone "$REPO" "$APP_DIR"
-
-    if [ -f "$env_backup" ]; then
-      cp -p "$env_backup" "$APP_DIR/.env"
-      rm -f "$env_backup"
-    fi
-
-    return
-  fi
-
-  rm -rf "$APP_DIR"
-  git clone "$REPO" "$APP_DIR"
-}
-
-install_app() {
-  ensure_repo
-  cd "$APP_DIR"
-
-  prepare_build_swap
-  trap cleanup_build_swap EXIT
-
-  npm install --no-audit --no-fund --prefer-offline
-
-  echo "Building 9router..."
-  MAKEFLAGS="-j1" NODE_OPTIONS="--max-old-space-size=768" npm run build
-
-  cleanup_build_swap
-  trap - EXIT
-
-  pm2 delete "$APP_NAME" 2>/dev/null || true
-  pm2 start custom-server.js --name "$APP_NAME" -- --port "$PORT"
-  pm2 save
-  pm2 startup systemd -u root --hp /root >/dev/null 2>&1 || true
+    sleep 2
+  done
+  echo "WARNING: Health check failed."
+  docker logs "$APP_NAME" --tail 50 || true
+  return 1
 }
 
 check_firewall() {
   if command -v ufw >/dev/null 2>&1 || command -v firewall-cmd >/dev/null 2>&1 || command -v nft >/dev/null 2>&1; then
-    echo
-    echo "WARNING: A firewall component appears to be installed."
-    echo "The installer will NOT open or modify any firewall port."
+    echo "WARNING: A firewall tool is installed. No firewall rule was opened or changed."
   else
-    echo "No common firewall tool detected. No firewall changes were made."
+    echo "No common firewall tool detected."
   fi
 }
 
-verify_service() {
-  echo
-  echo "=== Verifying 9router ==="
+install_or_update() {
+  install_docker
+  apt-get update
+  apt-get install -y curl openssl ca-certificates
+  ensure_env
 
-  if ss -lntp | grep -q ":$PORT "; then
-    echo "Listening: TCP $PORT"
+  local before after
+  before=$(docker image inspect "$IMAGE" -f '{{.Id}}' 2>/dev/null || true)
+
+  echo "Pulling latest 9Router image..."
+  docker pull "$IMAGE" >/dev/null
+  after=$(docker image inspect "$IMAGE" -f '{{.Id}}' 2>/dev/null || true)
+
+  if ! container_exists; then
+    run_container
+  elif ! container_running; then
+    echo "Starting existing stopped container..."
+    docker start "$APP_NAME" >/dev/null
+  elif [ "$before" != "$after" ]; then
+    echo "New image detected. Recreating container..."
+    run_container
   else
-    echo "WARNING: Nothing is listening on TCP $PORT."
-    pm2 status || true
-    pm2 logs "$APP_NAME" --lines 30 --nostream || true
-    return 1
+    echo "9Router is already up to date."
   fi
 
-  if curl -fsS --max-time 10 "http://127.0.0.1:$PORT/dashboard" >/dev/null; then
-    echo "Local dashboard check: OK"
-  else
-    echo "WARNING: Local dashboard check failed."
-    pm2 logs "$APP_NAME" --lines 30 --nostream || true
-    return 1
-  fi
-}
-
-show_result() {
-  local url
-  url=$(grep -E '^BASE_URL=' "$APP_DIR/.env" | head -n1 | cut -d= -f2- || true)
-
-  echo
-  echo "========================================"
-  echo "9router installed/updated successfully"
-  echo "========================================"
-  echo "Dashboard: ${url:-http://SERVER_IP:$PORT}/dashboard"
-  echo "API:       ${url:-http://SERVER_IP:$PORT}/v1"
-  echo "$PASSWORD_STATUS"
-  echo
-  echo "Status: pm2 status"
-  echo "Logs:   pm2 logs $APP_NAME"
-  echo "========================================"
-}
-
-uninstall() {
-  echo
-  echo "=== Remove 9router ==="
-  echo "This will stop 9router and permanently delete:"
-  echo "  $APP_DIR"
-  echo "  $DATA_DIR"
-  echo
-  echo "PM2 itself will NOT be removed."
-  echo "No firewall rules will be changed."
-  echo
-
-  local answer
-  read_tty "Type REMOVE to confirm: " answer
-
-  [ "$answer" = "REMOVE" ] || {
-    echo "Uninstall cancelled."
-    exit 0
-  }
-
-  pm2 delete "$APP_NAME" 2>/dev/null || true
-  pm2 save >/dev/null 2>&1 || true
-
-  rm -rf "$APP_DIR" "$DATA_DIR"
-
-  if [ -f "/swapfile_9router_build" ]; then
-    swapoff "/swapfile_9router_build" 2>/dev/null || true
-    rm -f "/swapfile_9router_build"
-  fi
-
-  echo
-  echo "9router has been removed."
-  echo "Node.js, npm, PM2, Git and other shared dependencies were left installed."
-}
-
-
-run_install() {
-  install_deps
-  mkdir -p "$APP_DIR"
-  create_or_update_env
-  install_app
+  health_check || true
+  install_auto_update
   check_firewall
-  verify_service || true
-  show_result
+  show_status
+}
+
+update_now() {
+  [ -f "$ENV_FILE" ] || die "9Router is not installed."
+  install_docker
+
+  local before after
+  before=$(docker image inspect "$IMAGE" -f '{{.Id}}' 2>/dev/null || true)
+  echo "Checking latest image..."
+  docker pull "$IMAGE" >/dev/null
+  after=$(docker image inspect "$IMAGE" -f '{{.Id}}' 2>/dev/null || true)
+
+  if ! container_exists || ! container_running || [ "$before" != "$after" ]; then
+    run_container
+    health_check || true
+  else
+    echo "No new image. No restart needed."
+  fi
+  show_status
+}
+
+setup_update_wrapper() {
+  cat > "$UPDATE_WRAPPER" <<'EOF'
+#!/bin/bash
+set -e
+curl -fsSL https://github.com/xpersian/9router-installer/archive/refs/heads/main.tar.gz \
+  | tar -xzO --wildcards '*/9router.sh' \
+  | bash -s -- update
+EOF
+  chmod 755 "$UPDATE_WRAPPER"
+}
+
+install_auto_update() {
+  setup_update_wrapper
+  cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=Update 9Router Docker image
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=$UPDATE_WRAPPER
+EOF
+
+  cat > "$TIMER_FILE" <<EOF
+[Unit]
+Description=Daily 9Router Docker image update
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+RandomizedDelaySec=10m
+Persistent=true
+Unit=9router-update.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now 9router-update.timer >/dev/null
+}
+
+cli_token() {
+  local raw secret
+  raw=$(cat "$DATA_DIR/machine-id" 2>/dev/null || true)
+  secret=$(cat "$DATA_DIR/auth/cli-secret" 2>/dev/null || true)
+  [ -n "$raw" ] && [ -n "$secret" ] || return 1
+  printf '%s' "$raw"9r-cli-auth"$secret" | sha256sum | cut -c1-16
+}
+
+wait_for_cli_token() {
+  local n token
+  for n in $(seq 1 45); do
+    token=$(cli_token || true)
+    if [ -n "$token" ]; then
+      printf '%s' "$token"
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+tunnel_request() {
+  local method="$1" path="$2" token
+  token=$(wait_for_cli_token) || die "Could not obtain 9Router CLI token. Check: docker logs $APP_NAME"
+  curl -fsS --max-time 180 -X "$method" -H "x-9r-cli-token: $token" "http://127.0.0.1:$PORT$path"
+}
+
+tunnel_status() {
+  echo
+  echo "=== Tunnel status ==="
+  container_running || { echo "9Router is not running."; return 1; }
+  local response
+  response=$(tunnel_request GET "/api/tunnel/status" || true)
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' "$response" | python3 -m json.tool 2>/dev/null || printf '%s\n' "$response"
+  else
+    printf '%s\n' "$response"
+  fi
+}
+
+enable_tunnel() {
+  echo
+  echo "=== Enable Tunnel ==="
+  tunnel_request POST "/api/tunnel/enable"
+  echo
+  tunnel_status
+}
+
+disable_tunnel() {
+  echo
+  echo "=== Disable Tunnel ==="
+  tunnel_request POST "/api/tunnel/disable"
+}
+
+refresh_tunnel() {
+  disable_tunnel || true
+  sleep 2
+  enable_tunnel
 }
 
 show_status() {
   echo
-  echo "=== 9router status ==="
-  pm2 status "$APP_NAME" 2>/dev/null || pm2 status
-  echo
-  echo "Listening ports:"
-  ss -lntp 2>/dev/null | grep ":$PORT " || echo "Nothing is listening on TCP $PORT."
+  echo "=== 9Router status ==="
+  docker ps -a --filter "name=^$APP_NAME$" --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
+  local base
+  base=$(grep -E '^BASE_URL=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
+  [ -n "$base" ] || base="http://SERVER_IP:$PORT"
+  echo "Dashboard: $base/dashboard"
+  echo "API:       $base/v1"
+  echo "Container restart policy: unless-stopped"
+  echo "Auto-update timer: $(systemctl is-active 9router-update.timer 2>/dev/null || echo not-installed)"
 }
 
 show_logs() {
-  pm2 logs "$APP_NAME" --lines 100 --nostream
+  docker logs --tail 150 -f "$APP_NAME"
 }
 
 restart_router() {
-  pm2 restart "$APP_NAME"
-  pm2 save
-  echo "9router restarted."
+  docker restart "$APP_NAME" >/dev/null
+  echo "9Router restarted."
+  health_check || true
+}
+
+uninstall_router() {
+  echo
+  echo "=== Uninstall 9Router ==="
+  echo "This permanently deletes the container, image, config and data:"
+  echo "  $APP_DIR"
+  echo "Docker itself remains installed."
+  echo "No firewall rules will be changed."
+  echo
+  local answer
+  read_tty "Type REMOVE to confirm: " answer
+  [ "$answer" = "REMOVE" ] || { echo "Uninstall cancelled."; return; }
+
+  systemctl disable --now 9router-update.timer >/dev/null 2>&1 || true
+  rm -f "$SERVICE_FILE" "$TIMER_FILE" "$UPDATE_WRAPPER"
+  systemctl daemon-reload
+  docker rm -f "$APP_NAME" >/dev/null 2>&1 || true
+  docker image rm "$IMAGE" >/dev/null 2>&1 || true
+  rm -rf "$APP_DIR"
+  echo "9Router removed. Docker was not removed."
 }
 
 menu() {
   while true; do
     echo
     echo "========================================"
-    echo "           9router Installer"
+    echo "          9Router Docker"
     echo "========================================"
     echo "1) Install / Update 9Router"
-    echo "2) Status"
-    echo "3) Show logs"
-    echo "4) Restart 9Router"
-    echo "5) Uninstall 9Router"
+    echo "2) Update now"
+    echo "3) Status"
+    echo "4) Tunnel status"
+    echo "5) Enable Tunnel"
+    echo "6) Disable Tunnel"
+    echo "7) Refresh Tunnel URL"
+    echo "8) Show logs"
+    echo "9) Restart 9Router"
+    echo "10) Uninstall 9Router"
     echo "0) Exit"
     echo "========================================"
 
     local choice
-    read_tty "Select an option [0-5]: " choice
+    read_tty "Select an option [0-10]: " choice
 
     case "$choice" in
-      1)
-        run_install
-        ;;
-      2)
-        show_status
-        ;;
-      3)
-        show_logs
-        ;;
-      4)
-        restart_router
-        ;;
-      5)
-        uninstall
-        ;;
-      0)
-        echo "Bye."
-        exit 0
-        ;;
-      *)
-        echo "Invalid option. Choose 0-5."
-        ;;
+      1) install_or_update ;;
+      2) update_now ;;
+      3) show_status ;;
+      4) tunnel_status ;;
+      5) enable_tunnel ;;
+      6) disable_tunnel ;;
+      7) refresh_tunnel ;;
+      8) show_logs ;;
+      9) restart_router ;;
+      10) uninstall_router ;;
+      0) exit 0 ;;
+      *) echo "Invalid option." ;;
     esac
 
     echo
@@ -462,20 +408,17 @@ menu() {
   done
 }
 
-case "${1:-menu}" in
-  install|update)
-    run_install
-    ;;
-  uninstall|remove|delete)
-    uninstall
-    ;;
-  menu)
-    menu
-    ;;
-  *)
-    echo "Usage:"
-    echo "  $0                  Open menu"
-    echo "  $0 install          Install / update 9Router"
-    echo "  $0 uninstall        Remove 9Router and its data"
-    ;;
+require_root
+MODE="$1"
+[ -n "$MODE" ] || MODE="menu"
+
+case "$MODE" in
+  install|update) install_or_update ;;
+  tunnel-status) tunnel_status ;;
+  tunnel-enable) enable_tunnel ;;
+  tunnel-disable) disable_tunnel ;;
+  tunnel-refresh) refresh_tunnel ;;
+  uninstall|remove|delete) uninstall_router ;;
+  menu) menu ;;
+  *) echo "Unknown command. Use: menu, install, update, tunnel-status, tunnel-enable, tunnel-disable, tunnel-refresh, uninstall." ;;
 esac
