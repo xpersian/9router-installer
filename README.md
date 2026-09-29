@@ -26,7 +26,7 @@ One-command installer and updater for [9Router](https://github.com/decolua/9rout
 Run as root:
 
 ~~~bash
-curl -fsSL https://github.com/xpersian/9router-installer/archive/refs/heads/main.tar.gz | tar -xzO --wildcards '*/9router.sh' | bash
+curl -fsSL https://github.com/xpersian/9router-installer/raw/refs/heads/main/9router.sh | bash
 ~~~
 
 The script opens a numbered menu.
@@ -93,7 +93,7 @@ The script updates the upstream source, installs dependencies, builds the applic
 To remove 9Router:
 
 ~~~bash
-bash <(curl -fsSL https://github.com/xpersian/9router-installer/archive/refs/heads/main.tar.gz | tar -xzO --wildcards '*/9router.sh') uninstall
+curl -fsSL https://github.com/xpersian/9router-installer/raw/refs/heads/main/9router.sh | bash -s -- uninstall
 ~~~
 
 Or run the normal menu and choose option **5**.
