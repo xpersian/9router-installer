@@ -10,7 +10,7 @@ Run as root:
 curl -fsSL https://github.com/xpersian/9router-installer/raw/refs/heads/main/9router.sh | bash
 ```
 
-The script installs Docker if needed, runs `decolua/9router:latest), exposes port `20128) on `0.0.0.0`, detects the server's public IPv4, and starts automatically after reboot.
+The script installs Docker if needed, runs `decolua/9router:latest), exposes port `20128` on `0.0.0.0`, detects the server's public IPv4, and starts automatically after reboot.
 
 First run asks for the dashboard password. Press Enter to generate one. The generated password is shown. Existing passwords are preserved on later runs.
 
