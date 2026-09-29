@@ -221,7 +221,8 @@ menu() {
 
 case "${1:-menu}" in
   menu) menu ;;
-  install) install_router ;;\n  update) update_router ;;
+  install) install_router ;;
+  update) update_router ;;
   status) status_router ;;
   restart) restart_router ;;
   uninstall|remove|delete) uninstall_router ;;
