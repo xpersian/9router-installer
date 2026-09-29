@@ -26,7 +26,7 @@
 با root اجرا کنید:
 
 ~~~bash
-curl -fsSL https://github.com/xpersian/9router-installer/archive/refs/heads/main.tar.gz | tar -xzO --wildcards '*/9router.sh' | bash
+curl -fsSL https://github.com/xpersian/9router-installer/raw/refs/heads/main/9router.sh | bash
 ~~~
 
 بعد از اجرا یک منوی شماره‌ای نمایش داده می‌شود.
@@ -93,7 +93,7 @@ Choose dashboard password (Enter = generate):
 برای حذف 9Router:
 
 ~~~bash
-bash <(curl -fsSL https://github.com/xpersian/9router-installer/archive/refs/heads/main.tar.gz | tar -xzO --wildcards '*/9router.sh') uninstall
+curl -fsSL https://github.com/xpersian/9router-installer/raw/refs/heads/main/9router.sh | bash -s -- uninstall
 ~~~
 
 یا از منوی اصلی گزینه **5** را انتخاب کنید.
